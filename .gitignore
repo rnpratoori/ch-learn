@@ -1,1 +1,14 @@
 ch_learn_adjoint.pvd
+ch_learn_adjoint/
+
+# Simulation output
+/ch_fh/
+/frames/
+*.pvd
+
+# Checkpoints
+checkpoint.pth
+
+# Generated plots and videos
+*.png
+*.mp4
