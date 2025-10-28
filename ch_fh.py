@@ -33,7 +33,7 @@ c_test, mu_test = split(v)
 rng = np.random.default_rng(11)
 num_dofs = u.sub(0).dat.data.shape[0]
 ic = np.zeros((num_dofs, 2))
-ic[:, 0] = 0.5 + 0.2 * (0.5 - rng.random(num_dofs))
+ic[:, 0] = [0.5 + 0.2 * sin(pi*i/4) for i in range(num_dofs)]
 ic[:, 1] = 0
 u_.sub(0).dat.data[:] = ic[:, 0]  # First component
 u_.sub(1).dat.data[:] = ic[:, 1]  # Second component
@@ -47,7 +47,7 @@ f = c*ln(c)/N1 + (1-c)*ln(1-c)/N2 + chi*c*(1-c)
 dfdc = diff(f, c)
 
 # Define mobility
-M = 16 * c**2 * (1-c)**2
+M = 1
 
 F0 = (inner(c, c_test) - inner(c_, c_test)) * dx + (dt/2) * M * dot(grad(mu + mu_), grad(c_test)) * dx
 F1 = inner(mu, mu_test) * dx - inner(dfdc, mu_test) * dx - lmbda**2 * dot(grad(c), grad(mu_test)) * dx
@@ -67,5 +67,4 @@ while (t < T):
     u_.assign(u)
     t += dt
     n += 1
-    if (n==N-1):
-        outfile.write(project(c_, V, name="Volume Fraction"), time=t)
+    outfile.write(project(c_, V, name="Volume Fraction"), time=t)

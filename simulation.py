@@ -1,6 +1,7 @@
 from firedrake import *
 import numpy as np
 import pyvista as pv
+from mpi4py import MPI
 
 def setup_firedrake():
     mesh = UnitIntervalMesh(100)

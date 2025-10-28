@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import imageio
 import os
 import subprocess
-from plotting import plot_combined_final_timestep, create_video, save_comparison_image, save_video_frame, plot_loss_over_epochs
+from plotting import plot_combined_final_timestep, create_video, save_comparison_image, save_video_frame, plot_loss_over_epochs, plot_dfdc_vs_c
 from simulation import setup_firedrake, solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
 
@@ -81,10 +81,12 @@ c_target_list, counts, displs = load_target_data(num_timesteps, V, comm, rank)
 # ----------------------
 # Training using firedrake-adjoint
 # ----------------------
-num_epochs = 20000
-comparison_image_save_freq = 1000
-video_frame_save_freq = 100
-checkpoint_freq = 100
+num_epochs = 10000
+comparison_image_save_freq = num_epochs/10
+video_frame_save_freq = num_epochs/100
+checkpoint_freq = num_epochs/20
+plot_loss_freq = num_epochs/20
+dfdc_plot_freq = num_epochs/100
 vtk_out = VTKFile("ch_learn_adjoint.pvd")
 
 # Load from checkpoint if available
@@ -96,12 +98,21 @@ if rank == 0:
     # frames directory & list for assembling video (rank 0 only)
     frames_dir = "frames"
     os.makedirs(frames_dir, exist_ok=True)
+    os.makedirs("dfdc_plots", exist_ok=True)
+    os.makedirs("comparison_images", exist_ok=True)
+    os.makedirs("loss_plots", exist_ok=True)
+    os.makedirs("videos", exist_ok=True)
     frames_list = []
 
 if rank == 0:
     get_working_tape().progress_bar = ProgressBar
 
+min_loss = float('inf')
+
 for epoch in range(start_epoch, num_epochs):
+    # clear previous tape
+    get_working_tape().clear_tape()
+
     # synchronize and start epoch timing (use perf_counter for better resolution)
     comm.Barrier()
     epoch_t0 = time.perf_counter()
@@ -137,7 +148,11 @@ for epoch in range(start_epoch, num_epochs):
         u_curr.assign(u_next)
 
         # --- LOSS CALCULATION ---
-        J_total += assemble(0.5 * (u_curr.sub(0) - c_target_list[i])**2 * dx)
+        if i <= 20:
+            J_total += 2*assemble(0.5 * (u_curr.sub(0) - c_target_list[i])**2 * dx)
+        else:
+            J_total += assemble(0.5 * (u_curr.sub(0) - c_target_list[i])**2 * dx)
+        # J_total += assemble(0.5 * (u_curr.sub(0) - c_target_list[i])**2 * dx)
 
         # Write this timestep only for the final epoch (match ch_fh.py behavior)
         if epoch == num_epochs - 1:
@@ -200,9 +215,18 @@ for epoch in range(start_epoch, num_epochs):
     elapsed_time = comm.allreduce(elapsed_local, op=MPI.MAX)
     # Record scalar loss for this epoch (assemble returns a global scalar)
     loss_epoch = float(J_total)
+    save_min_loss_plots_now = False
     if rank == 0:
         losses.append(loss_epoch)
         print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={float(J_total):.6e}")
+
+        if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
+            plot_loss_over_epochs(losses, filename="loss_plots/loss_vs_epoch.png")
+
+        if loss_epoch < min_loss:
+            min_loss = loss_epoch
+            print(f"New minimum loss: {min_loss:.6e}. Saving plots.")
+            save_min_loss_plots_now = True
 
     # --- CHECKPOINTING ---
     if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
@@ -224,7 +248,8 @@ for epoch in range(start_epoch, num_epochs):
     # Periodically gather data to the root process to save plots and video frames.
     save_comparison_image_now = ((epoch + 1) % comparison_image_save_freq == 0) or (epoch == num_epochs - 1)
     save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)
-    if save_comparison_image_now or save_video_frame_now:
+    save_dfdc_plot_now = ((epoch + 1) % dfdc_plot_freq == 0) or (epoch == num_epochs - 1)
+    if save_comparison_image_now or save_video_frame_now or save_min_loss_plots_now or save_dfdc_plot_now:
         # local arrays (each rank)
         pred_local = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
         target_local = c_target_list[-1].dat.data_ro.copy().astype(np.float64)
@@ -255,7 +280,7 @@ for epoch in range(start_epoch, num_epochs):
                 target_final_global = target_global.copy()
 
             if save_comparison_image_now:
-                save_comparison_image(epoch + 1, pred_global, target_global)
+                save_comparison_image(epoch + 1, pred_global, target_global, filename_prefix="comparison_images/c_final_epoch_")
 
             if save_video_frame_now:
                 try:
@@ -264,13 +289,24 @@ for epoch in range(start_epoch, num_epochs):
                     loss_text = float(J_total)
                 save_video_frame(epoch + 1, pred_global, target_global, loss_text, frames_dir, frames_list)
 
+            if save_dfdc_plot_now:
+                plot_dfdc_vs_c(dfdc_net, device, filename=f"dfdc_plots/dfdc_vs_c_epoch_{epoch+1}.png")
+
+            if save_min_loss_plots_now:
+                plot_dfdc_vs_c(dfdc_net, device, filename="dfdc_vs_c_min.png")
+                try:
+                    loss_text = loss_epoch
+                except NameError:
+                    loss_text = float(J_total)
+                save_video_frame(epoch + 1, pred_global, target_global, loss_text, frames_dir, frames_list, filename="c_final_min.png")
+
 if rank == 0:
     print("Training finished (adjoint update).")
     # Create one combined plot with all collected checkpoint epochs (only last timestep)
-    plot_combined_final_timestep(preds_collection, epochs_collection, target_final_global)
+    plot_combined_final_timestep(preds_collection, epochs_collection, target_final_global, filename="comparison_images/c_final_epochs_combined.png")
 
     # Assemble frames into a video (rank 0 only).
-    create_video(frames_list, frames_dir)
+    create_video(frames_list, frames_dir, video_fname="videos/c_final_comparison.mp4")
 
-    # Plot loss vs epoch (rank 0 only; saved to PNG)
-    plot_loss_over_epochs(losses)
+    # Plot the learned df/dc curve
+    plot_dfdc_vs_c(dfdc_net, device, filename="dfdc_plots/dfdc_vs_c.png")

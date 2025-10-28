@@ -1,8 +1,14 @@
 import torch
 import os
+import sys
 
-def save_checkpoint(epoch, model, optimizer, losses, rank, filename="checkpoint.pth"):
+def save_checkpoint(epoch, model, optimizer, losses, rank, filename=None):
     """Saves the training state to a checkpoint file."""
+    if filename is None:
+        main_file = sys.modules['__main__'].__file__
+        base_name = os.path.basename(main_file)
+        name, _ = os.path.splitext(base_name)
+        filename = f"{name}_check.pth"
     if rank == 0:  # Only save on the root process
         state = {
             'epoch': epoch,
@@ -13,8 +19,13 @@ def save_checkpoint(epoch, model, optimizer, losses, rank, filename="checkpoint.
         torch.save(state, filename)
         print(f"Saved checkpoint at epoch {epoch + 1} to {filename}")
 
-def load_checkpoint(model, optimizer, device, rank, filename="checkpoint.pth"):
+def load_checkpoint(model, optimizer, device, rank, filename=None):
     """Loads the training state from a checkpoint file."""
+    if filename is None:
+        main_file = sys.modules['__main__'].__file__
+        base_name = os.path.basename(main_file)
+        name, _ = os.path.splitext(base_name)
+        filename = f"{name}_check.pth"
     start_epoch = 0
     losses = []
     if os.path.exists(filename):
