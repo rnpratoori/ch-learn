@@ -1,5 +1,9 @@
 ch_learn_adjoint.pvd
 ch_learn_adjoint/
+ch_fh.pvd
+ch_fh/
+*cache*
+backup
 
 # Simulation output
 /ch_fh/
@@ -7,7 +11,7 @@ ch_learn_adjoint/
 *.pvd
 
 # Checkpoints
-checkpoint.pth
+*.pth
 
 # Generated plots and videos
 *.png
