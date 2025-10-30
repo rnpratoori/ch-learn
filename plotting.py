@@ -83,14 +83,25 @@ def create_video(frames_list, frames_dir, video_fname="c_final_comparison.mp4", 
             print(f"Saved video to {video_fname} using imageio")
         except Exception as e_img:
             print(f"imageio failed ({e_img}), trying ffmpeg fallback...")
+            # Create a temporary file listing the frames
+            frames_txt = os.path.join(frames_dir, "frames.txt")
+            with open(frames_txt, 'w') as f:
+                for frame_path in sorted(frames_list):
+                    f.write(f"file '{os.path.abspath(frame_path)}'\n")
+            
             try:
-                cmd = ["ffmpeg", "-y", "-framerate", str(fps), "-i",
-                       os.path.join(frames_dir, "frame_epoch_%04d.png"),
+                cmd = ["ffmpeg", "-y", "-r", str(fps), "-f", "concat", "-safe", "0", "-i", frames_txt,
                        "-c:v", "libx264", "-pix_fmt", "yuv420p", video_fname]
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
                 print(f"Saved video to {video_fname} using ffmpeg")
-            except Exception as e_ff:
+            except subprocess.CalledProcessError as e_ff:
                 print(f"ffmpeg fallback failed: {e_ff}")
+                print(f"ffmpeg stdout: {e_ff.stdout}")
+                print(f"ffmpeg stderr: {e_ff.stderr}")
+            finally:
+                # Clean up the temporary file
+                if os.path.exists(frames_txt):
+                    os.remove(frames_txt)
 
 def save_comparison_image(epoch, pred_global, target_global, filename_prefix="c_final_epoch_"):
     """

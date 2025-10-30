@@ -81,7 +81,7 @@ c_target_list, counts, displs = load_target_data(num_timesteps, V, comm, rank)
 # ----------------------
 # Training using firedrake-adjoint
 # ----------------------
-num_epochs = 10000
+num_epochs = 500
 comparison_image_save_freq = num_epochs/10
 video_frame_save_freq = num_epochs/100
 checkpoint_freq = num_epochs/20
@@ -234,15 +234,15 @@ for epoch in range(start_epoch, num_epochs):
 
     
     # --- Print timings ---
-    # if rank == 0:
-    #     print(f"--- Epoch {epoch+1} Timings ---")
-    #     print(f"  Firedrake Simulation:  {simulation_time:.4f}s")
-    #     print(f"  Adjoint Gradient:      {adjoint_grad_time:.4f}s")
-    #     print(f"  PyTorch Backprop:      {backprop_time:.4f}s")
-    #     print(f"  ---------------------------")
-    #     total_timed = simulation_time + adjoint_grad_time + backprop_time
-    #     print(f"  Total Timed Sections:   {total_timed:.4f}s")
-    #     print(f"  Total Epoch Time:         {elapsed_time:.4f}s")
+    if rank == 0:
+        print(f"--- Epoch {epoch+1} Timings ---")
+        print(f"  Firedrake Simulation:  {simulation_time:.4f}s")
+        print(f"  Adjoint Gradient:      {adjoint_grad_time:.4f}s")
+        print(f"  PyTorch Backprop:      {backprop_time:.4f}s")
+        print(f"  ---------------------------")
+        total_timed = simulation_time + adjoint_grad_time + backprop_time
+        print(f"  Total Timed Sections:   {total_timed:.4f}s")
+        print(f"  Total Epoch Time:         {elapsed_time:.4f}s")
 
     # --- Visualization ---
     # Periodically gather data to the root process to save plots and video frames.
