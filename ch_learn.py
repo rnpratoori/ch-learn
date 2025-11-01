@@ -5,22 +5,23 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import time
-import meshio
 import pyvista as pv
-from mpi4py import MPI
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import imageio
-import os
-import subprocess
-from plotting import plot_combined_final_timestep, create_video, save_comparison_image, save_video_frame, plot_loss_over_epochs, plot_dfdc_vs_c
+import wandb
+from plotting import plot_combined_final_timestep, create_video, save_comparison_image, save_video_frame, plot_dfdc_vs_c
 from simulation import setup_firedrake, solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
 
-comm = MPI.COMM_WORLD
-rank = comm.Get_rank()
-size = comm.Get_size()
+# ----------------------
+# Hyperparameters
+# ----------------------
+config = {
+    "learning_rate": 5e-3,
+    "epochs": 10000,
+    "seed": 12,
+}
 
 # ----------------------
 # PyTorch model
@@ -40,21 +41,18 @@ class FEDerivative(nn.Module):
         return self.mlp(c)
 
 # Seeds
-torch.manual_seed(12)
-np.random.seed(12)
+torch.manual_seed(config["seed"])
+np.random.seed(config["seed"])
 torch.set_default_dtype(torch.float64)
 # Instantiate network and optimizer
-# Use CUDA only when running with a single process (size == 1).
-# If multiple MPI ranks are used, default to CPU unless you have per-rank GPUs.
-if torch.cuda.is_available() and size == 1:
+if torch.cuda.is_available():
     device = torch.device("cuda")
 else:
     device = torch.device("cpu")
-if rank == 0:
-    print(f"Using PyTorch device: {device} (rank {rank}/{size})")
+print(f"Using PyTorch device: {device}")
 dfdc_net = FEDerivative().to(device)
 dfdc_net.double()
-optimizer = optim.Adam(dfdc_net.parameters(), lr=5e-3)
+optimizer = optim.Adam(dfdc_net.parameters(), lr=config["learning_rate"])
 
 # ----------------------
 # Problem setup
@@ -76,12 +74,12 @@ c_test, mu_test = split(v)
 # ----------------------
 # Load target (from PVD via pyvista)
 # ----------------------
-c_target_list, counts, displs = load_target_data(num_timesteps, V, comm, rank)
+c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
 
 # ----------------------
 # Training using firedrake-adjoint
 # ----------------------
-num_epochs = 10000
+num_epochs = config["epochs"]
 comparison_image_save_freq = num_epochs/10
 video_frame_save_freq = num_epochs/100
 checkpoint_freq = num_epochs/20
@@ -89,23 +87,16 @@ plot_loss_freq = num_epochs/20
 dfdc_plot_freq = num_epochs/100
 vtk_out = VTKFile("ch_learn_adjoint.pvd")
 
-# Load from checkpoint if available
-start_epoch, losses = load_checkpoint(dfdc_net, optimizer, device, rank)
-if rank == 0:
-    preds_collection = []    # list of ndarray, each is full global DOF vector for a checkpoint epoch
-    epochs_collection = []   # corresponding epoch numbers
-    target_final_global = None
-    # frames directory & list for assembling video (rank 0 only)
-    frames_dir = "frames"
-    os.makedirs(frames_dir, exist_ok=True)
-    os.makedirs("dfdc_plots", exist_ok=True)
-    os.makedirs("comparison_images", exist_ok=True)
-    os.makedirs("loss_plots", exist_ok=True)
-    os.makedirs("videos", exist_ok=True)
-    frames_list = []
+# Initialize wandb
+wandb.init(project="ch_learn", config=config)
 
-if rank == 0:
-    get_working_tape().progress_bar = ProgressBar
+# Load from checkpoint if available
+start_epoch = load_checkpoint(dfdc_net, optimizer, device)
+preds_collection = []    # list of ndarray, each is full global DOF vector for a checkpoint epoch
+epochs_collection = []   # corresponding epoch numbers
+target_final_global = None
+
+get_working_tape().progress_bar = ProgressBar
 
 min_loss = float('inf')
 
@@ -113,8 +104,6 @@ for epoch in range(start_epoch, num_epochs):
     # clear previous tape
     get_working_tape().clear_tape()
 
-    # synchronize and start epoch timing (use perf_counter for better resolution)
-    comm.Barrier()
     epoch_t0 = time.perf_counter()
 
     continue_annotation()
@@ -123,7 +112,6 @@ for epoch in range(start_epoch, num_epochs):
     u_curr = u_ic.copy(deepcopy=True)
 
     # --- FORWARD PASS ---
-    # Run the forward model and store the neural network inputs (c) and outputs (dfdc) for each time step.
     simulation_start = time.perf_counter()
     c_inputs = []
     dfdc_outputs = []
@@ -139,7 +127,6 @@ for epoch in range(start_epoch, num_epochs):
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
         with torch.no_grad():
             c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
-            # flatten to a 1D numpy array matching the DOF vector length
             dfdc_np = dfdc_net(c_tensor).cpu().numpy().reshape(-1)
 
         dfdc_f = Function(V, name=f"dfdc_pred_{i}")
@@ -150,186 +137,135 @@ for epoch in range(start_epoch, num_epochs):
         u_curr.assign(u_next)
 
         # --- LOSS CALCULATION (FFT) ---
-        # Get prediction and target as torch tensors
         u_curr_np = u_curr.sub(0).dat.data_ro
         target_np = c_target_list[i].dat.data_ro
         u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
         t_tensor = torch.tensor(target_np, device=device)
 
-        # Compute FFT loss
         fft_u = torch.fft.fft(u_tensor)
         fft_t = torch.fft.fft(t_tensor)
         loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
         
-        # The weight for the first 21 timesteps
         weight = 2.0 if i <= 20 else 1.0
         
-        # Get gradient of FFT loss w.r.t. u_tensor
         (weight * loss_i).backward()
         grad_u_tensor = u_tensor.grad
 
-        # Create a Firedrake function for the gradient
         g_i = Function(V)
         g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
 
-        # Add to the adjoint functional
         J_adj += assemble(inner(g_i, u_curr.sub(0)) * dx)
         J_total_log += weight * loss_i.item()
 
-
-        # Write this timestep only for the final epoch (match ch_fh.py behavior)
         if epoch == num_epochs - 1:
             t = (i + 1) * dt
             vtk_out.write(project(u_curr.sub(0), V, name="Volume Fraction"), time=t)
 
-    # synchronize and reduce forward simulation time (max across ranks)
-    comm.Barrier()
-    simulation_time_local = time.perf_counter() - simulation_start
-    simulation_time = comm.allreduce(simulation_time_local, op=MPI.MAX)
+    simulation_time = time.perf_counter() - simulation_start
 
     pause_annotation()
 
     # --- ADJOINT GRADIENT ---
-    # Compute the gradient of the loss with respect to the network outputs (dfdc) using the adjoint method.
-    comm.Barrier()
     adjoint_grad_start = time.perf_counter()
     controls = [Control(d) for d in dfdc_outputs]
     rf = ReducedFunctional(J_adj, controls)
 
-    # derivative() will return a list of gradients, one for each control
     dJ_dcs = rf.derivative()
-    # synchronize and reduce adjoint timing (max across ranks)
-    comm.Barrier()
-    adjoint_grad_time_local = time.perf_counter() - adjoint_grad_start
-    adjoint_grad_time = comm.allreduce(adjoint_grad_time_local, op=MPI.MAX)
+    adjoint_grad_time = time.perf_counter() - adjoint_grad_start
 
     # --- PYTORCH BACKPROPAGATION ---
-    # synchronize and time PyTorch backprop (including optimizer.step)
-    comm.Barrier()
     backprop_start = time.perf_counter()
     optimizer.zero_grad()
 
     for i in range(num_timesteps):
-        # Recompute the network output for this step with autograd enabled
         c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
         c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device)
         dfdc_i_tensor = dfdc_net(c_i_tensor)
 
-
         dJ_dcs_i_np = dJ_dcs[i].dat.data_ro.copy()
         sens_i_tensor = torch.from_numpy(dJ_dcs_i_np.astype(np.float64)).reshape(-1, 1).to(device)
 
-        # Form scalar loss for this time step and backpropagate
-        # The gradients will be accumulated in the network parameters
         scalar_for_backprop = torch.sum(dfdc_i_tensor * sens_i_tensor)
         scalar_for_backprop.backward()
 
-    # Update the network weights once with the accumulated gradients
     optimizer.step()
-    # synchronize and reduce backprop timing (max across ranks)
-    comm.Barrier()
-    backprop_time_local = time.perf_counter() - backprop_start
-    backprop_time = comm.allreduce(backprop_time_local, op=MPI.MAX)
+    backprop_time = time.perf_counter() - backprop_start
 
     # --- LOGGING ---
-    # synchronize and reduce epoch timing (max across ranks)
-    comm.Barrier()
-    elapsed_local = time.perf_counter() - epoch_t0
-    elapsed_time = comm.allreduce(elapsed_local, op=MPI.MAX)
-    # Record scalar loss for this epoch
+    elapsed_time = time.perf_counter() - epoch_t0
     loss_epoch = J_total_log
     save_min_loss_plots_now = False
-    if rank == 0:
-        losses.append(loss_epoch)
-        print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={J_total_log:.6e}")
 
-        if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
-            plot_loss_over_epochs(losses, filename="loss_plots/loss_vs_epoch.png")
+    print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={J_total_log:.6e}")
+    wandb.log({"loss": loss_epoch, "epoch": epoch})
 
-        if loss_epoch < min_loss:
-            min_loss = loss_epoch
-            print(f"New minimum loss: {min_loss:.6e}. Saving plots.")
-            save_min_loss_plots_now = True
+    if loss_epoch < min_loss:
+        min_loss = loss_epoch
+        print(f"New minimum loss: {min_loss:.6e}. Saving plots.")
+        save_min_loss_plots_now = True
 
     # --- CHECKPOINTING ---
     if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-        save_checkpoint(epoch, dfdc_net, optimizer, losses, rank)
-
-    
-    # --- Print timings ---
-    # if rank == 0:
-    #     print(f"--- Epoch {epoch+1} Timings ---")
-    #     print(f"  Firedrake Simulation:  {simulation_time:.4f}s")
-    #     print(f"  Adjoint Gradient:      {adjoint_grad_time:.4f}s")
-    #     print(f"  PyTorch Backprop:      {backprop_time:.4f}s")
-    #     print(f"  ---------------------------")
-    #     total_timed = simulation_time + adjoint_grad_time + backprop_time
-    #     print(f"  Total Timed Sections:   {total_timed:.4f}s")
-    #     print(f"  Total Epoch Time:         {elapsed_time:.4f}s")
+        save_checkpoint(epoch, dfdc_net, optimizer)
 
     # --- Visualization ---
-    # Periodically gather data to the root process to save plots and video frames.
     save_comparison_image_now = ((epoch + 1) % comparison_image_save_freq == 0) or (epoch == num_epochs - 1)
     save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)
     save_dfdc_plot_now = ((epoch + 1) % dfdc_plot_freq == 0) or (epoch == num_epochs - 1)
     if save_comparison_image_now or save_video_frame_now or save_min_loss_plots_now or save_dfdc_plot_now:
-        # local arrays (each rank)
-        pred_local = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
-        target_local = c_target_list[-1].dat.data_ro.copy().astype(np.float64)
+        pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
+        target_global = c_target_list[-1].dat.data_ro.copy().astype(np.float64)
 
-        # prepare recv buffers on rank 0 (global size = sum(counts))
-        if rank == 0:
-            global_n = counts.sum()
-            pred_global = np.empty(global_n, dtype=np.float64)
-            target_global = np.empty(global_n, dtype=np.float64)
-        else:
-            pred_global = None
-            target_global = None
+        preds_collection.append(pred_global.copy())
+        epochs_collection.append(epoch + 1)
+        if target_final_global is None:
+            target_final_global = target_global.copy()
 
-        # Gatherv from all ranks into rank 0
-        comm.Gatherv([pred_local, MPI.DOUBLE],
-                     [pred_global, counts, displs, MPI.DOUBLE],
-                     root=0)
-        comm.Gatherv([target_local, MPI.DOUBLE],
-                     [target_global, counts, displs, MPI.DOUBLE],
-                     root=0)
+        if save_comparison_image_now:
+            comparison_fig = save_comparison_image(epoch + 1, pred_global, target_global)
+            if comparison_fig:
+                wandb.log({"comparison_image": wandb.Image(comparison_fig)}, commit=False)
+                plt.close(comparison_fig)
 
-        # Rank 0: save per-25 image (preserved) and/or a frame for the video
-        if rank == 0:
-            # Store the gathered prediction for the final combined plot.
-            preds_collection.append(pred_global.copy())
-            epochs_collection.append(epoch + 1)
-            if target_final_global is None:
-                target_final_global = target_global.copy()
+        if save_video_frame_now:
+            loss_text = loss_epoch
+            video_frame_fig = save_video_frame(epoch + 1, pred_global, target_global, loss_text)
+            if video_frame_fig:
+                wandb.log({"video_frame": wandb.Image(video_frame_fig)}, commit=False)
+                plt.close(video_frame_fig)
 
-            if save_comparison_image_now:
-                save_comparison_image(epoch + 1, pred_global, target_global, filename_prefix="comparison_images/c_final_epoch_")
+        if save_dfdc_plot_now:
+            dfdc_fig = plot_dfdc_vs_c(dfdc_net, device)
+            if dfdc_fig:
+                wandb.log({"dfdc_plot": wandb.Image(dfdc_fig)}, commit=False)
+                plt.close(dfdc_fig)
 
-            if save_video_frame_now:
-                try:
-                    loss_text = loss_epoch  # available in scope
-                except NameError:
-                    loss_text = J_total_log
-                save_video_frame(epoch + 1, pred_global, target_global, loss_text, frames_dir, frames_list)
+        if save_min_loss_plots_now:
+            dfdc_fig_min = plot_dfdc_vs_c(dfdc_net, device)
+            if dfdc_fig_min:
+                wandb.log({"dfdc_plot_min_loss": wandb.Image(dfdc_fig_min)}, commit=False)
+                plt.close(dfdc_fig_min)
+            loss_text = loss_epoch
+            video_frame_min_fig = save_video_frame(epoch + 1, pred_global, target_global, loss_text)
+            if video_frame_min_fig:
+                wandb.log({"video_frame_min_loss": wandb.Image(video_frame_min_fig)}, commit=False)
+                plt.close(video_frame_min_fig)
 
-            if save_dfdc_plot_now:
-                plot_dfdc_vs_c(dfdc_net, device, filename=f"dfdc_plots/dfdc_vs_c_epoch_{epoch+1}.png")
+print("Training finished (adjoint update).")
+# Create one combined plot with all collected checkpoint epochs (only last timestep)
+combined_fig = plot_combined_final_timestep(preds_collection, epochs_collection, target_final_global)
+if combined_fig:
+    wandb.log({"combined_final_timestep_plot": wandb.Image(combined_fig)})
+    plt.close(combined_fig)
 
-            if save_min_loss_plots_now:
-                plot_dfdc_vs_c(dfdc_net, device, filename="dfdc_vs_c_min.png")
-                try:
-                    loss_text = loss_epoch
-                except NameError:
-                    loss_text = J_total_log
-                save_video_frame(epoch + 1, pred_global, target_global, loss_text, frames_dir, frames_list, filename="c_final_min.png")
+# Assemble frames into a video (rank 0 only).
+video_path = create_video()
+if video_path:
+    wandb.log({"video": wandb.Video(video_path)})
 
-if rank == 0:
-    print("Training finished (adjoint update).")
-    # Create one combined plot with all collected checkpoint epochs (only last timestep)
-    plot_combined_final_timestep(preds_collection, epochs_collection, target_final_global, filename="comparison_images/c_final_epochs_combined.png")
-
-    # Assemble frames into a video (rank 0 only).
-    create_video(frames_list, frames_dir, video_fname="videos/c_final_comparison.mp4")
-
-    # Plot the learned df/dc curve
-    plot_dfdc_vs_c(dfdc_net, device, filename="dfdc_plots/dfdc_vs_c.png")
+# Plot the learned df/dc curve
+dfdc_fig_final = plot_dfdc_vs_c(dfdc_net, device)
+if dfdc_fig_final:
+    wandb.log({"dfdc_plot_final": wandb.Image(dfdc_fig_final)})
+    plt.close(dfdc_fig_final)
+wandb.finish()

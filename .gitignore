@@ -5,6 +5,7 @@ backup
 
 # Simulation output
 /frames/
+/wandb/
 *.pvd
 
 # Checkpoints
