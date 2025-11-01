@@ -81,7 +81,7 @@ c_target_list, counts, displs = load_target_data(num_timesteps, V, comm, rank)
 # ----------------------
 # Training using firedrake-adjoint
 # ----------------------
-num_epochs = 500
+num_epochs = 10000
 comparison_image_save_freq = num_epochs/10
 video_frame_save_freq = num_epochs/100
 checkpoint_freq = num_epochs/20
@@ -127,7 +127,8 @@ for epoch in range(start_epoch, num_epochs):
     simulation_start = time.perf_counter()
     c_inputs = []
     dfdc_outputs = []
-    J_total = 0.0
+    J_adj = 0.0  # Adjoint functional for firedrake-adjoint
+    J_total_log = 0.0  # Scalar loss for logging
 
     for i in range(num_timesteps):
         c_curr = u_curr.sub(0)
@@ -138,6 +139,7 @@ for epoch in range(start_epoch, num_epochs):
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
         with torch.no_grad():
             c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
+            # flatten to a 1D numpy array matching the DOF vector length
             dfdc_np = dfdc_net(c_tensor).cpu().numpy().reshape(-1)
 
         dfdc_f = Function(V, name=f"dfdc_pred_{i}")
@@ -147,12 +149,33 @@ for epoch in range(start_epoch, num_epochs):
         u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
         u_curr.assign(u_next)
 
-        # --- LOSS CALCULATION ---
-        if i <= 20:
-            J_total += 2*assemble(0.5 * (u_curr.sub(0) - c_target_list[i])**2 * dx)
-        else:
-            J_total += assemble(0.5 * (u_curr.sub(0) - c_target_list[i])**2 * dx)
-        # J_total += assemble(0.5 * (u_curr.sub(0) - c_target_list[i])**2 * dx)
+        # --- LOSS CALCULATION (FFT) ---
+        # Get prediction and target as torch tensors
+        u_curr_np = u_curr.sub(0).dat.data_ro
+        target_np = c_target_list[i].dat.data_ro
+        u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
+        t_tensor = torch.tensor(target_np, device=device)
+
+        # Compute FFT loss
+        fft_u = torch.fft.fft(u_tensor)
+        fft_t = torch.fft.fft(t_tensor)
+        loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
+        
+        # The weight for the first 21 timesteps
+        weight = 2.0 if i <= 20 else 1.0
+        
+        # Get gradient of FFT loss w.r.t. u_tensor
+        (weight * loss_i).backward()
+        grad_u_tensor = u_tensor.grad
+
+        # Create a Firedrake function for the gradient
+        g_i = Function(V)
+        g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
+
+        # Add to the adjoint functional
+        J_adj += assemble(inner(g_i, u_curr.sub(0)) * dx)
+        J_total_log += weight * loss_i.item()
+
 
         # Write this timestep only for the final epoch (match ch_fh.py behavior)
         if epoch == num_epochs - 1:
@@ -171,7 +194,7 @@ for epoch in range(start_epoch, num_epochs):
     comm.Barrier()
     adjoint_grad_start = time.perf_counter()
     controls = [Control(d) for d in dfdc_outputs]
-    rf = ReducedFunctional(J_total, controls)
+    rf = ReducedFunctional(J_adj, controls)
 
     # derivative() will return a list of gradients, one for each control
     dJ_dcs = rf.derivative()
@@ -213,12 +236,12 @@ for epoch in range(start_epoch, num_epochs):
     comm.Barrier()
     elapsed_local = time.perf_counter() - epoch_t0
     elapsed_time = comm.allreduce(elapsed_local, op=MPI.MAX)
-    # Record scalar loss for this epoch (assemble returns a global scalar)
-    loss_epoch = float(J_total)
+    # Record scalar loss for this epoch
+    loss_epoch = J_total_log
     save_min_loss_plots_now = False
     if rank == 0:
         losses.append(loss_epoch)
-        print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={float(J_total):.6e}")
+        print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={J_total_log:.6e}")
 
         if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
             plot_loss_over_epochs(losses, filename="loss_plots/loss_vs_epoch.png")
@@ -234,15 +257,15 @@ for epoch in range(start_epoch, num_epochs):
 
     
     # --- Print timings ---
-    if rank == 0:
-        print(f"--- Epoch {epoch+1} Timings ---")
-        print(f"  Firedrake Simulation:  {simulation_time:.4f}s")
-        print(f"  Adjoint Gradient:      {adjoint_grad_time:.4f}s")
-        print(f"  PyTorch Backprop:      {backprop_time:.4f}s")
-        print(f"  ---------------------------")
-        total_timed = simulation_time + adjoint_grad_time + backprop_time
-        print(f"  Total Timed Sections:   {total_timed:.4f}s")
-        print(f"  Total Epoch Time:         {elapsed_time:.4f}s")
+    # if rank == 0:
+    #     print(f"--- Epoch {epoch+1} Timings ---")
+    #     print(f"  Firedrake Simulation:  {simulation_time:.4f}s")
+    #     print(f"  Adjoint Gradient:      {adjoint_grad_time:.4f}s")
+    #     print(f"  PyTorch Backprop:      {backprop_time:.4f}s")
+    #     print(f"  ---------------------------")
+    #     total_timed = simulation_time + adjoint_grad_time + backprop_time
+    #     print(f"  Total Timed Sections:   {total_timed:.4f}s")
+    #     print(f"  Total Epoch Time:         {elapsed_time:.4f}s")
 
     # --- Visualization ---
     # Periodically gather data to the root process to save plots and video frames.
@@ -286,7 +309,7 @@ for epoch in range(start_epoch, num_epochs):
                 try:
                     loss_text = loss_epoch  # available in scope
                 except NameError:
-                    loss_text = float(J_total)
+                    loss_text = J_total_log
                 save_video_frame(epoch + 1, pred_global, target_global, loss_text, frames_dir, frames_list)
 
             if save_dfdc_plot_now:
@@ -297,7 +320,7 @@ for epoch in range(start_epoch, num_epochs):
                 try:
                     loss_text = loss_epoch
                 except NameError:
-                    loss_text = float(J_total)
+                    loss_text = J_total_log
                 save_video_frame(epoch + 1, pred_global, target_global, loss_text, frames_dir, frames_list, filename="c_final_min.png")
 
 if rank == 0:
