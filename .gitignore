@@ -1,12 +1,9 @@
 ch_learn_adjoint.pvd
 ch_learn_adjoint/
-ch_fh.pvd
-ch_fh/
 *cache*
 backup
 
 # Simulation output
-/ch_fh/
 /frames/
 *.pvd
 
