@@ -37,38 +37,16 @@ def solve_one_step(u_old, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda):
     })
     return u
 
-def load_target_data(num_timesteps, V, comm, rank):
-    if rank == 0:
-        print("Loading target from PVD (pyvista)... (parallel-safe)")
+def load_target_data(num_timesteps, V, comm=None, rank=None):
+    print("Loading target from PVD (pyvista)...")
     c_target_list = []
 
-    # create a Function on each rank to query local size
-    _local_example = Function(V)
-    local_n = _local_example.dat.data.shape[0]
-    counts = comm.allgather(local_n)           # list of local sizes per rank
-    counts = np.array(counts, dtype=np.int32)
-    displs = np.insert(np.cumsum(counts), 0, 0, axis=0)[:-1]
-
     for i in range(num_timesteps):
-        if rank == 0:
-            # read global array on rank 0 only
-            reader = pv.get_reader(f"/home/rnp/firedrake/ch_learn/ch_fh/ch_fh_{i}.vtu")
-            data = reader.read()
-            arr_global = data.point_data["Volume Fraction"].astype(np.float64)
-            # Sanity check: combined counts should match length of arr_global
-            if arr_global.size != counts.sum():
-                raise RuntimeError(f"Global DOF mismatch: arr size {arr_global.size} != sum(counts) {counts.sum()}")
-        else:
-            arr_global = None
+        reader = pv.get_reader(f"/home/rnp/firedrake/ch_learn/ch_fh/ch_fh_{i}.vtu")
+        data = reader.read()
+        arr_global = data.point_data["Volume Fraction"].astype(np.float64)
 
-        # prepare local recv buffer
-        local_arr = np.empty(local_n, dtype=np.float64)
-
-        # Scatterv: sendbuf=(arr_global, counts, displs, MPI.DOUBLE), recvbuf=local_arr
-        comm.Scatterv([arr_global, counts, displs, MPI.DOUBLE], local_arr, root=0)
-
-        # assign local part to a Firedrake Function (this is local data, correct shape)
         f = Function(V, name=f"target_{i}")
-        f.dat.data[:] = local_arr
+        f.dat.data[:] = arr_global
         c_target_list.append(f)
-    return c_target_list, counts, displs
+    return c_target_list, None, None

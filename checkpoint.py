@@ -1,43 +1,49 @@
 import torch
 import os
 import sys
+import wandb
 
-def save_checkpoint(epoch, model, optimizer, losses, rank, filename=None):
-    """Saves the training state to a checkpoint file."""
-    if filename is None:
-        main_file = sys.modules['__main__'].__file__
-        base_name = os.path.basename(main_file)
-        name, _ = os.path.splitext(base_name)
-        filename = f"{name}_check.pth"
-    if rank == 0:  # Only save on the root process
-        state = {
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'losses': losses,
-        }
-        torch.save(state, filename)
-        print(f"Saved checkpoint at epoch {epoch + 1} to {filename}")
+def save_checkpoint(epoch, model, optimizer, filename="ch_learn_model.pth"):
+    """Saves the training state to a checkpoint file using wandb.Artifacts."""
+    # Save model locally first
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, filename)
+    
+    # Create a wandb Artifact
+    artifact = wandb.Artifact(name="ch_learn_model", type="model")
+    artifact.add_file(filename)
+    wandb.log_artifact(artifact)
+    print(f"Saved checkpoint artifact at epoch {epoch + 1}")
 
-def load_checkpoint(model, optimizer, device, rank, filename=None):
-    """Loads the training state from a checkpoint file."""
-    if filename is None:
-        main_file = sys.modules['__main__'].__file__
-        base_name = os.path.basename(main_file)
-        name, _ = os.path.splitext(base_name)
-        filename = f"{name}_check.pth"
+def load_checkpoint(model, optimizer, device, filename="ch_learn_model.pth"):
+    """Loads the training state from a checkpoint file using wandb.Artifacts."""
     start_epoch = 0
-    losses = []
-    if os.path.exists(filename):
-        # All ranks load the checkpoint to ensure model and optimizer are synchronized.
+
+    if wandb.run:
+        try:
+            # Download the latest model artifact
+            artifact = wandb.use_artifact('ch_learn_model:latest')
+            artifact_path = artifact.download()
+            checkpoint_path = os.path.join(artifact_path, filename)
+
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            print(f"Loaded checkpoint from epoch {checkpoint['epoch'] + 1}. Resuming training from epoch {start_epoch + 1}.")
+        except Exception as e:
+            print(f"Could not load wandb artifact: {e}. Starting training from scratch.")
+    elif os.path.exists(filename):
+        # Fallback to local checkpoint if wandb not active or artifact not found
         checkpoint = torch.load(filename, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
-        losses = checkpoint['losses']
-        if rank == 0:
-            print(f"Loaded checkpoint from epoch {checkpoint['epoch'] + 1}. Resuming training from epoch {start_epoch + 1}.")
+        print(f"Loaded local checkpoint from epoch {checkpoint['epoch'] + 1}. Resuming training from epoch {start_epoch + 1}.")
     else:
-        if rank == 0:
-            print("No checkpoint found, starting training from scratch.")
-    return start_epoch, losses
+        print("No checkpoint found, starting training from scratch.")
+            
+    return start_epoch
