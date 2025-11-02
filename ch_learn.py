@@ -1,5 +1,6 @@
 from firedrake import *
 from firedrake.adjoint import *   # provides ReducedFunctional, Control, etc.
+import argparse
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,7 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import wandb
-from plotting import plot_combined_final_timestep, create_video, save_comparison_image, save_video_frame, plot_dfdc_vs_c
+from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison
 from simulation import setup_firedrake, solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
 
@@ -19,7 +20,7 @@ from checkpoint import save_checkpoint, load_checkpoint
 # ----------------------
 config = {
     "learning_rate": 5e-3,
-    "epochs": 10000,
+    "epochs": 100,
     "seed": 12,
 }
 
@@ -30,11 +31,11 @@ class FEDerivative(nn.Module):
     def __init__(self):
         super(FEDerivative, self).__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(1, 20), # input c and t
-            nn.Tanh(),
-            nn.Linear(20, 20),
-            nn.Tanh(),
-            nn.Linear(20, 1)
+            nn.Linear(1, 50), # input c and t
+            nn.LeakyReLU(),
+            nn.Linear(50, 50),
+            nn.LeakyReLU(),
+            nn.Linear(50, 1)
         )
 
     def forward(self, c):
@@ -53,6 +54,7 @@ print(f"Using PyTorch device: {device}")
 dfdc_net = FEDerivative().to(device)
 dfdc_net.double()
 optimizer = optim.Adam(dfdc_net.parameters(), lr=config["learning_rate"])
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
 
 # ----------------------
 # Problem setup
@@ -80,18 +82,29 @@ c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
 # Training using firedrake-adjoint
 # ----------------------
 num_epochs = config["epochs"]
-comparison_image_save_freq = num_epochs/10
+
 video_frame_save_freq = num_epochs/100
 checkpoint_freq = num_epochs/20
 plot_loss_freq = num_epochs/20
 dfdc_plot_freq = num_epochs/100
 vtk_out = VTKFile("ch_learn_adjoint.pvd")
 
+# ----------------------
+# Argument Parsing
+# ----------------------
+parser = argparse.ArgumentParser(description='Cahn-Hilliard learning script.')
+parser.add_argument('--no-resume', action='store_true', help='Start training from scratch, ignoring any checkpoints.')
+args = parser.parse_args()
+
 # Initialize wandb
 wandb.init(project="ch_learn", config=config)
 
-# Load from checkpoint if available
-start_epoch = load_checkpoint(dfdc_net, optimizer, device)
+# Load from checkpoint if available and not disabled
+start_epoch = 0
+if not args.no_resume:
+    start_epoch = load_checkpoint(dfdc_net, optimizer, device)
+else:
+    print("Starting training from scratch as requested by --no-resume flag.")
 preds_collection = []    # list of ndarray, each is full global DOF vector for a checkpoint epoch
 epochs_collection = []   # corresponding epoch numbers
 target_final_global = None
@@ -117,6 +130,7 @@ for epoch in range(start_epoch, num_epochs):
     dfdc_outputs = []
     J_adj = 0.0  # Adjoint functional for firedrake-adjoint
     J_total_log = 0.0  # Scalar loss for logging
+    comparison_data = []
 
     for i in range(num_timesteps):
         c_curr = u_curr.sub(0)
@@ -135,6 +149,9 @@ for epoch in range(start_epoch, num_epochs):
 
         u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
         u_curr.assign(u_next)
+
+        if (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
+            comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
 
         # --- LOSS CALCULATION (FFT) ---
         u_curr_np = u_curr.sub(0).dat.data_ro
@@ -194,6 +211,7 @@ for epoch in range(start_epoch, num_epochs):
     # --- LOGGING ---
     elapsed_time = time.perf_counter() - epoch_t0
     loss_epoch = J_total_log
+    scheduler.step(loss_epoch)
     save_min_loss_plots_now = False
 
     print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={J_total_log:.6e}")
@@ -209,10 +227,9 @@ for epoch in range(start_epoch, num_epochs):
         save_checkpoint(epoch, dfdc_net, optimizer)
 
     # --- Visualization ---
-    save_comparison_image_now = ((epoch + 1) % comparison_image_save_freq == 0) or (epoch == num_epochs - 1)
     save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)
     save_dfdc_plot_now = ((epoch + 1) % dfdc_plot_freq == 0) or (epoch == num_epochs - 1)
-    if save_comparison_image_now or save_video_frame_now or save_min_loss_plots_now or save_dfdc_plot_now:
+    if save_video_frame_now or save_min_loss_plots_now or save_dfdc_plot_now:
         pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
         target_global = c_target_list[-1].dat.data_ro.copy().astype(np.float64)
 
@@ -221,18 +238,11 @@ for epoch in range(start_epoch, num_epochs):
         if target_final_global is None:
             target_final_global = target_global.copy()
 
-        if save_comparison_image_now:
-            comparison_fig = save_comparison_image(epoch + 1, pred_global, target_global)
-            if comparison_fig:
-                wandb.log({"comparison_image": wandb.Image(comparison_fig)}, commit=False)
-                plt.close(comparison_fig)
-
         if save_video_frame_now:
-            loss_text = loss_epoch
-            video_frame_fig = save_video_frame(epoch + 1, pred_global, target_global, loss_text)
-            if video_frame_fig:
-                wandb.log({"video_frame": wandb.Image(video_frame_fig)}, commit=False)
-                plt.close(video_frame_fig)
+            multi_ts_video_frame_fig = plot_multi_timestep_comparison(epoch + 1, comparison_data)
+            if multi_ts_video_frame_fig:
+                wandb.log({"video_frame": wandb.Image(multi_ts_video_frame_fig)}, commit=False)
+                plt.close(multi_ts_video_frame_fig)
 
         if save_dfdc_plot_now:
             dfdc_fig = plot_dfdc_vs_c(dfdc_net, device)
@@ -245,11 +255,11 @@ for epoch in range(start_epoch, num_epochs):
             if dfdc_fig_min:
                 wandb.log({"dfdc_plot_min_loss": wandb.Image(dfdc_fig_min)}, commit=False)
                 plt.close(dfdc_fig_min)
-            loss_text = loss_epoch
-            video_frame_min_fig = save_video_frame(epoch + 1, pred_global, target_global, loss_text)
-            if video_frame_min_fig:
-                wandb.log({"video_frame_min_loss": wandb.Image(video_frame_min_fig)}, commit=False)
-                plt.close(video_frame_min_fig)
+            
+            multi_ts_fig = plot_multi_timestep_comparison(epoch + 1, comparison_data)
+            if multi_ts_fig:
+                wandb.log({"multi_timestep_comparison_min_loss": wandb.Image(multi_ts_fig)}, commit=False)
+                plt.close(multi_ts_fig)
 
 print("Training finished (adjoint update).")
 # Create one combined plot with all collected checkpoint epochs (only last timestep)
@@ -258,14 +268,15 @@ if combined_fig:
     wandb.log({"combined_final_timestep_plot": wandb.Image(combined_fig)})
     plt.close(combined_fig)
 
-# Assemble frames into a video (rank 0 only).
-video_path = create_video()
-if video_path:
-    wandb.log({"video": wandb.Video(video_path)})
-
 # Plot the learned df/dc curve
 dfdc_fig_final = plot_dfdc_vs_c(dfdc_net, device)
 if dfdc_fig_final:
     wandb.log({"dfdc_plot_final": wandb.Image(dfdc_fig_final)})
     plt.close(dfdc_fig_final)
+# Save data for post-processing
+np.savez("post_processing_data.npz",
+         preds_collection=np.array(preds_collection),
+         epochs_collection=np.array(epochs_collection),
+         target_final_global=target_final_global)
+
 wandb.finish()
