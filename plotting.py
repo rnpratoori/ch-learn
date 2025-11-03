@@ -33,6 +33,34 @@ def plot_dfdc_vs_c(dfdc_net, device):
         return None
 
 
+def plot_f_vs_c(f_net, device):
+    """
+    Plots the learned free energy (f) against the concentration (c).
+    Returns the matplotlib figure.
+
+    :param f_net: The trained PyTorch model for f.
+    :param device: The PyTorch device (e.g., 'cpu' or 'cuda').
+    :return: A matplotlib.figure.Figure object.
+    """
+    try:
+        c_values = np.linspace(0, 1, 200).reshape(-1, 1)
+        c_tensor = torch.from_numpy(c_values).to(device)
+        with torch.no_grad():
+            f_values = f_net(c_tensor).cpu().numpy()
+
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot(c_values, f_values)
+        ax.set_xlabel("Concentration (c)")
+        ax.set_ylabel("Free Energy (f)")
+        ax.set_title("Learned Free Energy")
+        ax.grid(True)
+        plt.tight_layout()
+        return fig
+    except Exception as e:
+        print(f"Could not create f vs c plot: {e}")
+        return None
+
+
 def plot_combined_final_timestep(preds_collection, epochs_collection, target_final_global):
     """
     Creates a combined plot showing the final-timestep predictions from several epochs against the ground truth.

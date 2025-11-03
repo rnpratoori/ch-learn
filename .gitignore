@@ -14,3 +14,4 @@ backup
 # Generated plots and videos
 *.png
 *.mp4
+*.npz
