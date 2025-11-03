@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import wandb
-from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison
+from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison, plot_f_vs_c
 from simulation import setup_firedrake, solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
 
@@ -19,17 +19,19 @@ from checkpoint import save_checkpoint, load_checkpoint
 # Hyperparameters
 # ----------------------
 config = {
-    "learning_rate": 5e-3,
+    "learning_rate": 1e-3,
     "epochs": 100,
     "seed": 12,
 }
 
+checkpoint_filename = "ch_learn_energy_model.pth"
+
 # ----------------------
 # PyTorch model
 # ----------------------
-class FEDerivative(nn.Module):
+class FEnergy(nn.Module):
     def __init__(self):
-        super(FEDerivative, self).__init__()
+        super(FEnergy, self).__init__()
         self.mlp = nn.Sequential(
             nn.Linear(1, 50), # input c and t
             nn.LeakyReLU(),
@@ -51,9 +53,9 @@ if torch.cuda.is_available():
 else:
     device = torch.device("cpu")
 print(f"Using PyTorch device: {device}")
-dfdc_net = FEDerivative().to(device)
-dfdc_net.double()
-optimizer = optim.Adam(dfdc_net.parameters(), lr=config["learning_rate"])
+f_net = FEnergy().to(device)
+f_net.double()
+optimizer = optim.Adam(f_net.parameters(), lr=config["learning_rate"])
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
 
 # ----------------------
@@ -102,7 +104,7 @@ wandb.init(project="ch_learn", config=config)
 # Load from checkpoint if available and not disabled
 start_epoch = 0
 if not args.no_resume:
-    start_epoch = load_checkpoint(dfdc_net, optimizer, device)
+    start_epoch = load_checkpoint(f_net, optimizer, device, filename=checkpoint_filename)
 else:
     print("Starting training from scratch as requested by --no-resume flag.")
 preds_collection = []    # list of ndarray, each is full global DOF vector for a checkpoint epoch
@@ -139,9 +141,13 @@ for epoch in range(start_epoch, num_epochs):
         c_inputs.append(c_snapshot)
 
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
-        with torch.no_grad():
-            c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
-            dfdc_np = dfdc_net(c_tensor).cpu().numpy().reshape(-1)
+        c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device).requires_grad_(True)
+        
+        # Predict f and compute df/dc using autograd
+        f_tensor = f_net(c_tensor)
+        dfdc_tensor = torch.autograd.grad(f_tensor.sum(), c_tensor, create_graph=True)[0]
+        
+        dfdc_np = dfdc_tensor.detach().cpu().numpy().reshape(-1)
 
         dfdc_f = Function(V, name=f"dfdc_pred_{i}")
         dfdc_f.dat.data[:] = dfdc_np
@@ -196,14 +202,17 @@ for epoch in range(start_epoch, num_epochs):
 
     for i in range(num_timesteps):
         c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
-        c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device)
-        dfdc_i_tensor = dfdc_net(c_i_tensor)
+        c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device).requires_grad_(True)
+
+        # Predict f and compute df/dc to reconstruct the graph
+        f_i_tensor = f_net(c_i_tensor)
+        dfdc_i_tensor = torch.autograd.grad(f_i_tensor.sum(), c_i_tensor, create_graph=True)[0]
 
         dJ_dcs_i_np = dJ_dcs[i].dat.data_ro.copy()
         sens_i_tensor = torch.from_numpy(dJ_dcs_i_np.astype(np.float64)).reshape(-1, 1).to(device)
 
-        scalar_for_backprop = torch.sum(dfdc_i_tensor * sens_i_tensor)
-        scalar_for_backprop.backward()
+        # Backpropagate the sensitivity from the adjoint pass through the df/dc calculation
+        dfdc_i_tensor.backward(gradient=sens_i_tensor)
 
     optimizer.step()
     backprop_time = time.perf_counter() - backprop_start
@@ -224,7 +233,7 @@ for epoch in range(start_epoch, num_epochs):
 
     # --- CHECKPOINTING ---
     if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-        save_checkpoint(epoch, dfdc_net, optimizer)
+        save_checkpoint(epoch, f_net, optimizer, filename=checkpoint_filename)
 
     # --- Visualization ---
     save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)
@@ -245,16 +254,16 @@ for epoch in range(start_epoch, num_epochs):
                 plt.close(multi_ts_video_frame_fig)
 
         if save_dfdc_plot_now:
-            dfdc_fig = plot_dfdc_vs_c(dfdc_net, device)
-            if dfdc_fig:
-                wandb.log({"dfdc_plot": wandb.Image(dfdc_fig)}, commit=False)
-                plt.close(dfdc_fig)
+            f_fig = plot_f_vs_c(f_net, device)
+            if f_fig:
+                wandb.log({"f_plot": wandb.Image(f_fig)}, commit=False)
+                plt.close(f_fig)
 
         if save_min_loss_plots_now:
-            dfdc_fig_min = plot_dfdc_vs_c(dfdc_net, device)
-            if dfdc_fig_min:
-                wandb.log({"dfdc_plot_min_loss": wandb.Image(dfdc_fig_min)}, commit=False)
-                plt.close(dfdc_fig_min)
+            f_fig_min = plot_f_vs_c(f_net, device)
+            if f_fig_min:
+                wandb.log({"f_plot_min_loss": wandb.Image(f_fig_min)}, commit=False)
+                plt.close(f_fig_min)
             
             multi_ts_fig = plot_multi_timestep_comparison(epoch + 1, comparison_data)
             if multi_ts_fig:
@@ -268,11 +277,11 @@ if combined_fig:
     wandb.log({"combined_final_timestep_plot": wandb.Image(combined_fig)})
     plt.close(combined_fig)
 
-# Plot the learned df/dc curve
-dfdc_fig_final = plot_dfdc_vs_c(dfdc_net, device)
-if dfdc_fig_final:
-    wandb.log({"dfdc_plot_final": wandb.Image(dfdc_fig_final)})
-    plt.close(dfdc_fig_final)
+# Plot the learned f curve
+f_fig_final = plot_f_vs_c(f_net, device)
+if f_fig_final:
+    wandb.log({"f_plot_final": wandb.Image(f_fig_final)})
+    plt.close(f_fig_final)
 # Save data for post-processing
 np.savez("post_processing_data.npz",
          preds_collection=np.array(preds_collection),
