@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import time
-import pyvista as pv
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -14,6 +13,11 @@ import wandb
 from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison, plot_f_vs_c
 from simulation import setup_firedrake, solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
+import os
+from pathlib import Path
+
+output_dir = Path(os.getenv("OUTPUT_DIR", "."))
+output_dir.mkdir(parents=True, exist_ok=True)
 
 # ----------------------
 # Hyperparameters
@@ -89,7 +93,7 @@ video_frame_save_freq = num_epochs/100
 checkpoint_freq = num_epochs/20
 plot_loss_freq = num_epochs/20
 dfdc_plot_freq = num_epochs/100
-vtk_out = VTKFile("ch_learn_adjoint.pvd")
+vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
 
 # ----------------------
 # Argument Parsing
@@ -111,7 +115,7 @@ preds_collection = []    # list of ndarray, each is full global DOF vector for a
 epochs_collection = []   # corresponding epoch numbers
 target_final_global = None
 
-get_working_tape().progress_bar = ProgressBar
+
 
 min_loss = float('inf')
 
@@ -283,7 +287,7 @@ if f_fig_final:
     wandb.log({"f_plot_final": wandb.Image(f_fig_final)})
     plt.close(f_fig_final)
 # Save data for post-processing
-np.savez("post_processing_data.npz",
+np.savez(output_dir / "post_processing_data.npz",
          preds_collection=np.array(preds_collection),
          epochs_collection=np.array(epochs_collection),
          target_final_global=target_final_global)
