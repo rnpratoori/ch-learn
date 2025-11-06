@@ -1,8 +1,5 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import imageio
-import os
-import subprocess
 import torch
 
 def plot_dfdc_vs_c(dfdc_net, device):
