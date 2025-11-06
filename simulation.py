@@ -42,7 +42,7 @@ def load_target_data(num_timesteps, V, comm=None, rank=None):
     c_target_list = []
 
     for i in range(num_timesteps):
-        reader = pv.get_reader(f"/home/rnp/firedrake/ch_learn/ch_fh/ch_fh_{i}.vtu")
+        reader = pv.get_reader(f"/work/mech-ai/rnp/ch-learn/ch_fh/ch_fh_{i}.vtu")
         data = reader.read()
         arr_global = data.point_data["Volume Fraction"].astype(np.float64)
 

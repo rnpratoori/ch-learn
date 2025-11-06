@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import time
-import pyvista as pv
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -14,13 +13,18 @@ import wandb
 from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison
 from simulation import setup_firedrake, solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
+import os
+from pathlib import Path
 
+output_dir = Path(os.getenv("OUTPUT_DIR", "."))
+output_dir.mkdir(parents=True, exist_ok=True)
+    
 # ----------------------
 # Hyperparameters
 # ----------------------
 config = {
-    "learning_rate": 5e-3,
-    "epochs": 100,
+    "learning_rate": 1e-3,
+    "epochs": 20000,
     "seed": 12,
 }
 
@@ -87,7 +91,7 @@ video_frame_save_freq = num_epochs/100
 checkpoint_freq = num_epochs/20
 plot_loss_freq = num_epochs/20
 dfdc_plot_freq = num_epochs/100
-vtk_out = VTKFile("ch_learn_adjoint.pvd")
+vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
 
 # ----------------------
 # Argument Parsing
@@ -102,14 +106,12 @@ wandb.init(project="ch_learn", config=config)
 # Load from checkpoint if available and not disabled
 start_epoch = 0
 if not args.no_resume:
-    start_epoch = load_checkpoint(dfdc_net, optimizer, device)
+    start_epoch = load_checkpoint(dfdc_net, optimizer, device, output_dir)
 else:
     print("Starting training from scratch as requested by --no-resume flag.")
 preds_collection = []    # list of ndarray, each is full global DOF vector for a checkpoint epoch
 epochs_collection = []   # corresponding epoch numbers
 target_final_global = None
-
-get_working_tape().progress_bar = ProgressBar
 
 min_loss = float('inf')
 
@@ -224,7 +226,7 @@ for epoch in range(start_epoch, num_epochs):
 
     # --- CHECKPOINTING ---
     if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-        save_checkpoint(epoch, dfdc_net, optimizer)
+        save_checkpoint(epoch, dfdc_net, optimizer, output_dir)
 
     # --- Visualization ---
     save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)
@@ -274,7 +276,7 @@ if dfdc_fig_final:
     wandb.log({"dfdc_plot_final": wandb.Image(dfdc_fig_final)})
     plt.close(dfdc_fig_final)
 # Save data for post-processing
-np.savez("post_processing_data.npz",
+np.savez(output_dir / "post_processing_data.npz",
          preds_collection=np.array(preds_collection),
          epochs_collection=np.array(epochs_collection),
          target_final_global=target_final_global)
