@@ -10,7 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import wandb
-from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison
+from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison, plot_loss_vs_epochs
 from simulation import setup_firedrake, solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
 import os
@@ -128,6 +128,117 @@ for epoch in range(start_epoch, num_epochs):
 
     # --- FORWARD PASS ---
     simulation_start = time.perf_counter()
+    c_inputs = []
+    dfdc_outputs = []
+    J_adj = 0.0  # Adjoint functional for firedrake-adjoint
+    J_total_log = 0.0  # Scalar loss for logging
+    comparison_data = []
+
+    for i in range(num_timesteps):
+        c_curr = u_curr.sub(0)
+        c_snapshot = Function(V, name=f"c_snapshot_{i}")
+        c_snapshot.assign(c_curr)
+        c_inputs.append(c_snapshot)
+
+        c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
+        with torch.no_grad():
+            c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
+            dfdc_np = dfdc_net(c_tensor).cpu().numpy().reshape(-1)
+
+        dfdc_f = Function(V, name=f"dfdc_pred_{i}")
+        dfdc_f.dat.data[:] = dfdc_np
+        dfdc_outputs.append(dfdc_f)
+
+        u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
+        u_curr.assign(u_next)
+
+        if (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
+            comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
+
+        # --- LOSS CALCULATION (FFT) ---
+        u_curr_np = u_curr.sub(0).dat.data_ro
+        target_np = c_target_list[i].dat.data_ro
+        u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
+        t_tensor = torch.tensor(target_np, device=device)
+
+        fft_u = torch.fft.fft(u_tensor)
+        fft_t = torch.fft.fft(t_tensor)
+        loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
+        
+        weight = 1.0 if i <= 20 else 1.0
+        
+        (weight * loss_i).backward()
+        grad_u_tensor = u_tensor.grad
+
+        g_i = Function(V)
+        g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
+
+        J_adj += assemble(inner(g_i, u_curr.sub(0)) * dx)
+        J_total_log += weight * loss_i.item()
+
+        if epoch == num_epochs - 1:
+            t = (i + 1) * dt
+            vtk_out.write(project(u_curr.sub(0), V, name="Volume Fraction"), time=t)
+
+    simulation_time = time.perf_counter() - simulation_start
+
+    pause_annotation()
+
+    # --- ADJOINT GRADIENT ---
+    adjoint_grad_start = time.perf_counter()
+    controls = [Control(d) for d in dfdc_outputs]
+    rf = ReducedFunctional(J_adj, controls)
+
+    dJ_dcs = rf.derivative()
+    adjoint_grad_time = time.perf_counter() - adjoint_grad_start
+
+    # --- PYTORCH BACKPROPAGATION ---
+    backprop_start = time.perf_counter()
+    optimizer.zero_grad()
+
+    for i in range(num_timesteps):
+        c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
+        c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device)
+        dfdc_i_tensor = dfdc_net(c_i_tensor)
+
+        dJ_dcs_i_np = dJ_dcs[i].dat.data_ro.copy()
+        sens_i_tensor = torch.from_numpy(dJ_dcs_i_np.astype(np.float64)).reshape(-1, 1).to(device)
+
+        scalar_for_backprop = torch.sum(dfdc_i_tensor * sens_i_tensor)
+        scalar_for_backprop.backward()
+
+    optimizer.step()
+    backprop_time = time.perf_counter() - backprop_start
+
+    # --- LOGGING ---
+    elapsed_time = time.perf_counter() - epoch_t0
+    loss_epoch = J_total_log
+    scheduler.step(loss_epoch)
+    save_min_loss_plots_now = False
+
+    epoch_losses.append(loss_epoch)
+    epoch_numbers.append(epoch + 1)
+
+    print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={J_total_log:.6e}")
+    wandb.log({"loss": loss_epoch, "epoch": epoch})
+
+    if loss_epoch < min_loss:
+        min_loss = loss_epoch
+        print(f"New minimum loss: {min_loss:.6e}. Saving plots.")
+        save_min_loss_plots_now = True
+
+    # --- CHECKPOINTING ---
+    if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
+        save_checkpoint(epoch, dfdc_net, optimizer, epoch_losses, epoch_numbers, output_dir)
+
+    # --- PLOT LOSS ---
+    if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
+        plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs.png")
+
+    # --- Visualization ---
+    save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)
+    save_dfdc_plot_now = ((epoch + 1) % dfdc_plot_freq == 0) or (epoch == num_epochs - 1)
+    if save_video_frame_now or save_min_loss_plots_now or save_dfdc_plot_now:
     c_inputs = []
     dfdc_outputs = []
     J_adj = 0.0  # Adjoint functional for firedrake-adjoint

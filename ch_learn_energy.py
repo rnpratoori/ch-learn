@@ -10,7 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import wandb
-from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison, plot_f_vs_c
+from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison, plot_f_vs_c, plot_loss_vs_epochs
 from simulation import setup_firedrake, solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
 import os
@@ -107,8 +107,10 @@ wandb.init(project="ch_learn", config=config)
 
 # Load from checkpoint if available and not disabled
 start_epoch = 0
+epoch_losses = []
+epoch_numbers = []
 if not args.no_resume:
-    start_epoch = load_checkpoint(f_net, optimizer, device, filename=checkpoint_filename)
+    start_epoch, epoch_losses, epoch_numbers = load_checkpoint(f_net, optimizer, device, output_dir, filename=checkpoint_filename)
 else:
     print("Starting training from scratch as requested by --no-resume flag.")
 preds_collection = []    # list of ndarray, each is full global DOF vector for a checkpoint epoch
@@ -227,6 +229,9 @@ for epoch in range(start_epoch, num_epochs):
     scheduler.step(loss_epoch)
     save_min_loss_plots_now = False
 
+    epoch_losses.append(loss_epoch)
+    epoch_numbers.append(epoch + 1)
+
     print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={J_total_log:.6e}")
     wandb.log({"loss": loss_epoch, "epoch": epoch})
 
@@ -237,7 +242,11 @@ for epoch in range(start_epoch, num_epochs):
 
     # --- CHECKPOINTING ---
     if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-        save_checkpoint(epoch, f_net, optimizer, filename=checkpoint_filename)
+        save_checkpoint(epoch, f_net, optimizer, epoch_losses, epoch_numbers, output_dir, filename=checkpoint_filename)
+
+    # --- PLOT LOSS ---
+    if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
+        plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs_energy.png")
 
     # --- Visualization ---
     save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)

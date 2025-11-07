@@ -119,3 +119,27 @@ def plot_multi_timestep_comparison(epoch, comparison_data):
     ax.grid(True)
     plt.tight_layout()
     return fig
+
+
+def plot_loss_vs_epochs(epochs, losses, output_path):
+    """
+    Plots the training loss against epochs and saves it to a file.
+
+    :param epochs: A list of epoch numbers.
+    :param losses: A list of loss values.
+    :param output_path: The path to save the plot image.
+    """
+    try:
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(epochs, losses, label='Training Loss')
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.set_title("Loss vs. Epochs")
+        ax.set_yscale('log')
+        ax.legend()
+        ax.grid(True)
+        plt.tight_layout()
+        fig.savefig(output_path)
+        plt.close(fig)
+    except Exception as e:
+        print(f"Could not create loss vs epochs plot: {e}")
