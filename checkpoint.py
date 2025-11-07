@@ -2,7 +2,7 @@ import torch
 import os
 import wandb
 
-def save_checkpoint(epoch, model, optimizer, output_dir, filename="ch_learn_model.pth"):
+def save_checkpoint(epoch, model, optimizer, epoch_losses, epoch_numbers, output_dir, filename="ch_learn_model.pth"):
     """Saves the training state to a checkpoint file using wandb.Artifacts."""
     # Save model locally first
     checkpoint_path = output_dir / filename
@@ -10,6 +10,8 @@ def save_checkpoint(epoch, model, optimizer, output_dir, filename="ch_learn_mode
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'epoch_losses': epoch_losses,
+        'epoch_numbers': epoch_numbers,
     }, checkpoint_path)
     
     # Create a wandb Artifact
@@ -21,6 +23,8 @@ def save_checkpoint(epoch, model, optimizer, output_dir, filename="ch_learn_mode
 def load_checkpoint(model, optimizer, device, output_dir, filename="ch_learn_model.pth"):
     """Loads the training state from a checkpoint file using wandb.Artifacts."""
     start_epoch = 0
+    epoch_losses = []
+    epoch_numbers = []
     checkpoint_path = output_dir / filename
 
     if wandb.run:
@@ -34,6 +38,8 @@ def load_checkpoint(model, optimizer, device, output_dir, filename="ch_learn_mod
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch'] + 1
+            epoch_losses = checkpoint.get('epoch_losses', [])
+            epoch_numbers = checkpoint.get('epoch_numbers', [])
             print(f"Loaded checkpoint from epoch {checkpoint['epoch'] + 1}. Resuming training from epoch {start_epoch + 1}.")
         except Exception as e:
             print(f"Could not load wandb artifact: {e}. Starting training from scratch.")
@@ -43,8 +49,10 @@ def load_checkpoint(model, optimizer, device, output_dir, filename="ch_learn_mod
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
+        epoch_losses = checkpoint.get('epoch_losses', [])
+        epoch_numbers = checkpoint.get('epoch_numbers', [])
         print(f"Loaded local checkpoint from epoch {checkpoint['epoch'] + 1}. Resuming training from epoch {start_epoch + 1}.")
     else:
         print("No checkpoint found, starting training from scratch.")
             
-    return start_epoch
+    return start_epoch, epoch_losses, epoch_numbers
