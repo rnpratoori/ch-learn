@@ -11,13 +11,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import wandb
 from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison, plot_loss_vs_epochs
-from simulation import setup_firedrake, solve_one_step, load_target_data
+from simulation import solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
 import os
 from pathlib import Path
 
 output_dir = Path(os.getenv("OUTPUT_DIR", "."))
 output_dir.mkdir(parents=True, exist_ok=True)
+vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
     
 # ----------------------
 # Hyperparameters
@@ -27,6 +28,13 @@ config = {
     "epochs": 100,
     "seed": 12,
 }
+
+num_epochs = config["epochs"]
+
+video_frame_save_freq = num_epochs/100
+checkpoint_freq = num_epochs/20
+plot_loss_freq = num_epochs/20
+dfdc_plot_freq = num_epochs/100
 
 # ----------------------
 # PyTorch model
@@ -61,44 +69,45 @@ optimizer = optim.Adam(dfdc_net.parameters(), lr=config["learning_rate"])
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
 
 # ----------------------
+# Argument Parsing
+# ----------------------
+parser = argparse.ArgumentParser(description='Cahn-Hilliard learning script.')
+parser.add_argument('--no-resume', action='store_true', help='Start training from scratch, ignoring any checkpoints.')
+args = parser.parse_args()
+
+# ----------------------
 # Problem setup
 # ----------------------
 lmbda = 5e-2
 dt = 1e-2
 T = 1e0
 M = 1.0
-
 num_timesteps = int(T / dt)
 
-mesh, V, W, u_ic = setup_firedrake()
+# Create the mesh and function spaces
+mesh = UnitIntervalMesh(100)
+V = FunctionSpace(mesh, "Lagrange", 1)
+W = V * V
+
+# Load the target data
+c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
+
+# Setup the initial condition
+u_ic = Function(W, name="Initial_condition")
+print("Setting initial condition from the first timestep of the target data.")
+u_ic.sub(0).assign(c_target_list[0])
+u_ic.sub(1).assign(0.0)
 
 u = Function(W, name="Solution")
 c, mu = split(u)
 v = TestFunction(W)
 c_test, mu_test = split(v)
 
-# ----------------------
-# Load target (from PVD via pyvista)
-# ----------------------
-c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
 
 # ----------------------
 # Training using firedrake-adjoint
 # ----------------------
-num_epochs = config["epochs"]
 
-video_frame_save_freq = num_epochs/100
-checkpoint_freq = num_epochs/20
-plot_loss_freq = num_epochs/20
-dfdc_plot_freq = num_epochs/100
-vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
-
-# ----------------------
-# Argument Parsing
-# ----------------------
-parser = argparse.ArgumentParser(description='Cahn-Hilliard learning script.')
-parser.add_argument('--no-resume', action='store_true', help='Start training from scratch, ignoring any checkpoints.')
-args = parser.parse_args()
 
 # Initialize wandb
 wandb.init(project="ch_learn", config=config)
