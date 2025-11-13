@@ -24,7 +24,7 @@ output_dir.mkdir(parents=True, exist_ok=True)
 # ----------------------
 config = {
     "learning_rate": 1e-3,
-    "epochs": 20000,
+    "epochs": 100,
     "seed": 12,
 }
 
@@ -50,12 +50,12 @@ torch.manual_seed(config["seed"])
 np.random.seed(config["seed"])
 torch.set_default_dtype(torch.float64)
 # Instantiate network and optimizer
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
+# if torch.cuda.is_available():
+#     device = torch.device("cuda")
+# else:
+device = torch.device("cpu")
 print(f"Using PyTorch device: {device}")
-dfdc_net = FEDerivative().to(device)
+dfdc_net = FEDerivative()#.to(device) # Commented out .to(device) to force CPU
 dfdc_net.double()
 optimizer = optim.Adam(dfdc_net.parameters(), lr=config["learning_rate"])
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
@@ -112,8 +112,11 @@ else:
 preds_collection = []    # list of ndarray, each is full global DOF vector for a checkpoint epoch
 epochs_collection = []   # corresponding epoch numbers
 target_final_global = None
+all_epochs_comparison_data = []
 
 min_loss = float('inf')
+epoch_losses = []
+epoch_numbers = []
 
 for epoch in range(start_epoch, num_epochs):
     # clear previous tape
@@ -210,6 +213,14 @@ for epoch in range(start_epoch, num_epochs):
     optimizer.step()
     backprop_time = time.perf_counter() - backprop_start
 
+    # --- Post-processing and data collection for this epoch ---
+    processed_comparison_data = []
+    for i, u_pred, c_targ in comparison_data:
+        processed_comparison_data.append(
+            (i, u_pred.dat.data_ro.copy(), c_targ.dat.data_ro.copy())
+        )
+    all_epochs_comparison_data.append({'epoch': epoch, 'data': processed_comparison_data})
+
     # --- LOGGING ---
     elapsed_time = time.perf_counter() - epoch_t0
     loss_epoch = J_total_log
@@ -234,110 +245,6 @@ for epoch in range(start_epoch, num_epochs):
     # --- PLOT LOSS ---
     if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
         plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs.png")
-
-    # --- Visualization ---
-    save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)
-    save_dfdc_plot_now = ((epoch + 1) % dfdc_plot_freq == 0) or (epoch == num_epochs - 1)
-    if save_video_frame_now or save_min_loss_plots_now or save_dfdc_plot_now:
-    c_inputs = []
-    dfdc_outputs = []
-    J_adj = 0.0  # Adjoint functional for firedrake-adjoint
-    J_total_log = 0.0  # Scalar loss for logging
-    comparison_data = []
-
-    for i in range(num_timesteps):
-        c_curr = u_curr.sub(0)
-        c_snapshot = Function(V, name=f"c_snapshot_{i}")
-        c_snapshot.assign(c_curr)
-        c_inputs.append(c_snapshot)
-
-        c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
-        with torch.no_grad():
-            c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
-            dfdc_np = dfdc_net(c_tensor).cpu().numpy().reshape(-1)
-
-        dfdc_f = Function(V, name=f"dfdc_pred_{i}")
-        dfdc_f.dat.data[:] = dfdc_np
-        dfdc_outputs.append(dfdc_f)
-
-        u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
-        u_curr.assign(u_next)
-
-        if (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
-            comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
-
-        # --- LOSS CALCULATION (FFT) ---
-        u_curr_np = u_curr.sub(0).dat.data_ro
-        target_np = c_target_list[i].dat.data_ro
-        u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
-        t_tensor = torch.tensor(target_np, device=device)
-
-        fft_u = torch.fft.fft(u_tensor)
-        fft_t = torch.fft.fft(t_tensor)
-        loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
-        
-        weight = 1.0 if i <= 20 else 1.0
-        
-        (weight * loss_i).backward()
-        grad_u_tensor = u_tensor.grad
-
-        g_i = Function(V)
-        g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
-
-        J_adj += assemble(inner(g_i, u_curr.sub(0)) * dx)
-        J_total_log += weight * loss_i.item()
-
-        if epoch == num_epochs - 1:
-            t = (i + 1) * dt
-            vtk_out.write(project(u_curr.sub(0), V, name="Volume Fraction"), time=t)
-
-    simulation_time = time.perf_counter() - simulation_start
-
-    pause_annotation()
-
-    # --- ADJOINT GRADIENT ---
-    adjoint_grad_start = time.perf_counter()
-    controls = [Control(d) for d in dfdc_outputs]
-    rf = ReducedFunctional(J_adj, controls)
-
-    dJ_dcs = rf.derivative()
-    adjoint_grad_time = time.perf_counter() - adjoint_grad_start
-
-    # --- PYTORCH BACKPROPAGATION ---
-    backprop_start = time.perf_counter()
-    optimizer.zero_grad()
-
-    for i in range(num_timesteps):
-        c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
-        c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device)
-        dfdc_i_tensor = dfdc_net(c_i_tensor)
-
-        dJ_dcs_i_np = dJ_dcs[i].dat.data_ro.copy()
-        sens_i_tensor = torch.from_numpy(dJ_dcs_i_np.astype(np.float64)).reshape(-1, 1).to(device)
-
-        scalar_for_backprop = torch.sum(dfdc_i_tensor * sens_i_tensor)
-        scalar_for_backprop.backward()
-
-    optimizer.step()
-    backprop_time = time.perf_counter() - backprop_start
-
-    # --- LOGGING ---
-    elapsed_time = time.perf_counter() - epoch_t0
-    loss_epoch = J_total_log
-    scheduler.step(loss_epoch)
-    save_min_loss_plots_now = False
-
-    print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={J_total_log:.6e}")
-    wandb.log({"loss": loss_epoch, "epoch": epoch})
-
-    if loss_epoch < min_loss:
-        min_loss = loss_epoch
-        print(f"New minimum loss: {min_loss:.6e}. Saving plots.")
-        save_min_loss_plots_now = True
-
-    # --- CHECKPOINTING ---
-    if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-        save_checkpoint(epoch, dfdc_net, optimizer, output_dir)
 
     # --- Visualization ---
     save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)
@@ -387,9 +294,20 @@ if dfdc_fig_final:
     wandb.log({"dfdc_plot_final": wandb.Image(dfdc_fig_final)})
     plt.close(dfdc_fig_final)
 # Save data for post-processing
+# Generate df/dc vs c plot data
+c_values_dfdc = np.linspace(0, 1, 200).reshape(-1, 1)
+c_tensor_dfdc = torch.from_numpy(c_values_dfdc).to(device)
+with torch.no_grad():
+    dfdc_values = dfdc_net(c_tensor_dfdc).cpu().numpy()
+
 np.savez(output_dir / "post_processing_data.npz",
          preds_collection=np.array(preds_collection),
          epochs_collection=np.array(epochs_collection),
-         target_final_global=target_final_global)
+         target_final_global=target_final_global,
+         all_epochs_comparison_data=np.array(all_epochs_comparison_data, dtype=object),
+         c_values_dfdc=c_values_dfdc,
+         dfdc_values=dfdc_values,
+         epoch_losses=np.array(epoch_losses),
+         epoch_numbers=np.array(epoch_numbers))
 
 wandb.finish()
