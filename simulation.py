@@ -3,22 +3,6 @@ import numpy as np
 import pyvista as pv
 from mpi4py import MPI
 
-def setup_firedrake():
-    mesh = UnitIntervalMesh(100)
-    V = FunctionSpace(mesh, "Lagrange", 1)
-    W = V * V
-
-    # initial condition
-    rng = np.random.default_rng(12)
-    u_ic = Function(W, name="Initial_condition")
-    num_dofs = u_ic.sub(0).dat.data.shape[0]
-    ic = np.zeros((num_dofs, 2))
-    ic[:, 0] = [0.5 + 0.2 * sin(pi*i/4) for i in range(num_dofs)]
-    ic[:, 1] = 0
-    u_ic.sub(0).dat.data[:] = ic[:, 0]
-    u_ic.sub(1).dat.data[:] = ic[:, 1]
-    return mesh, V, W, u_ic
-
 def solve_one_step(u_old, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda):
     u_ = Function(u.function_space(), name="Solution_Old")
     u_.assign(u_old)
