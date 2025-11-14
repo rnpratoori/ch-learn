@@ -165,7 +165,7 @@ for epoch in range(start_epoch, num_epochs):
         u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
         u_curr.assign(u_next)
 
-        if (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
+        if i == 0 or (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
             comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
 
         # --- LOSS CALCULATION (FFT) ---
