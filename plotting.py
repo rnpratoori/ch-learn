@@ -2,59 +2,33 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-def plot_dfdc_vs_c(dfdc_net, device):
+def plot_nn_output_vs_c(net, device, ylabel, title):
     """
-    Plots the learned free energy derivative (dfdc) against the concentration (c).
+    Plots the output of a given neural network against the concentration (c).
     Returns the matplotlib figure.
 
-    :param dfdc_net: The trained PyTorch model for df/dc.
+    :param net: The trained PyTorch model.
     :param device: The PyTorch device (e.g., 'cpu' or 'cuda').
+    :param ylabel: The label for the y-axis.
+    :param title: The title for the plot.
     :return: A matplotlib.figure.Figure object.
     """
     try:
         c_values = np.linspace(0, 1, 200).reshape(-1, 1)
         c_tensor = torch.from_numpy(c_values).to(device)
         with torch.no_grad():
-            dfdc_values = dfdc_net(c_tensor).cpu().numpy()
+            output_values = net(c_tensor).cpu().numpy()
 
         fig, ax = plt.subplots(figsize=(6, 4))
-        ax.plot(c_values, dfdc_values)
+        ax.plot(c_values, output_values)
         ax.set_xlabel("Concentration (c)")
-        ax.set_ylabel("Free Energy Derivative (df/dc)")
-        ax.set_title("Learned Free Energy Derivative")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
         ax.grid(True)
         plt.tight_layout()
         return fig
     except Exception as e:
-        print(f"Could not create df/dc vs c plot: {e}")
-        return None
-
-
-def plot_f_vs_c(f_net, device):
-    """
-    Plots the learned free energy (f) against the concentration (c).
-    Returns the matplotlib figure.
-
-    :param f_net: The trained PyTorch model for f.
-    :param device: The PyTorch device (e.g., 'cpu' or 'cuda').
-    :return: A matplotlib.figure.Figure object.
-    """
-    try:
-        c_values = np.linspace(0, 1, 200).reshape(-1, 1)
-        c_tensor = torch.from_numpy(c_values).to(device)
-        with torch.no_grad():
-            f_values = f_net(c_tensor).cpu().numpy()
-
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.plot(c_values, f_values)
-        ax.set_xlabel("Concentration (c)")
-        ax.set_ylabel("Free Energy (f)")
-        ax.set_title("Learned Free Energy")
-        ax.grid(True)
-        plt.tight_layout()
-        return fig
-    except Exception as e:
-        print(f"Could not create f vs c plot: {e}")
+        print(f"Could not create nn output vs c plot: {e}")
         return None
 
 
@@ -92,9 +66,11 @@ def plot_combined_final_timestep(preds_collection, epochs_collection, target_fin
 
 
 
-def plot_multi_timestep_comparison(epoch, comparison_data):
+from mpl_toolkits.mplot3d import Axes3D
+
+def plot_multi_timestep_comparison_2d(epoch, comparison_data):
     """
-    Creates a figure with predictions and targets at multiple timesteps on the same plot.
+    Creates a 2D figure with predictions and targets at multiple timesteps on the same plot.
     """
     num_plots = len(comparison_data)
     if num_plots == 0:
@@ -114,9 +90,47 @@ def plot_multi_timestep_comparison(epoch, comparison_data):
 
     ax.set_xlabel("DOF index")
     ax.set_ylabel("c")
-    ax.set_title(f"Epoch {epoch} - Multi-timestep Comparison")
+    ax.set_title(f"Epoch {epoch} - 2D Multi-timestep Comparison")
     ax.legend(ncol=2, fontsize='small')
     ax.grid(True)
+    plt.tight_layout()
+    return fig
+
+
+def plot_multi_timestep_comparison_3d(epoch, comparison_data):
+    """
+    Creates a 3D figure with predictions and targets at multiple timesteps.
+    X-axis: DOF index, Y-axis: Time, Z-axis: Concentration (c)
+    """
+    if len(comparison_data) == 0:
+        return None
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Prepare data for surface plots
+    x_coords = np.arange(comparison_data[0][1].dat.data_ro.size)
+    t_coords = np.array([d[0] for d in comparison_data])
+    
+    X, T = np.meshgrid(x_coords, t_coords)
+    
+    C_pred = np.array([d[1].dat.data_ro for d in comparison_data])
+    C_targ = np.array([d[2].dat.data_ro for d in comparison_data])
+
+    # Plot the prediction and target surfaces
+    ax.plot_surface(X, T, C_pred, cmap='viridis', alpha=0.7, rstride=1, cstride=5, label='Prediction')
+    ax.plot_surface(X, T, C_targ, cmap='autumn', alpha=0.7, rstride=1, cstride=5, label='Target')
+
+    ax.set_xlabel("DOF index")
+    ax.set_ylabel("Timestep")
+    ax.set_zlabel("Concentration (c)")
+    ax.set_title(f"Epoch {epoch} - 3D Space-Time Comparison")
+    
+    # Create proxy artists for legend
+    pred_proxy = plt.Rectangle((0, 0), 1, 1, fc="blue")
+    targ_proxy = plt.Rectangle((0, 0), 1, 1, fc="red")
+    ax.legend([pred_proxy, targ_proxy], ['Prediction', 'Target'])
+
     plt.tight_layout()
     return fig
 

@@ -10,7 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import wandb
-from plotting import plot_combined_final_timestep, plot_dfdc_vs_c, plot_multi_timestep_comparison, plot_loss_vs_epochs
+from plotting import plot_combined_final_timestep, plot_nn_output_vs_c, plot_multi_timestep_comparison_2d, plot_multi_timestep_comparison_3d, plot_loss_vs_epochs
 from simulation import solve_one_step, load_target_data
 from checkpoint import save_checkpoint, load_checkpoint
 import os
@@ -35,6 +35,7 @@ video_frame_save_freq = num_epochs/100
 checkpoint_freq = num_epochs/20
 plot_loss_freq = num_epochs/20
 dfdc_plot_freq = num_epochs/100
+npz_save_freq = num_epochs/10
 
 # ----------------------
 # PyTorch model
@@ -58,12 +59,12 @@ torch.manual_seed(config["seed"])
 np.random.seed(config["seed"])
 torch.set_default_dtype(torch.float64)
 # Instantiate network and optimizer
-# if torch.cuda.is_available():
-#     device = torch.device("cuda")
-# else:
-device = torch.device("cpu")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
 print(f"Using PyTorch device: {device}")
-dfdc_net = FEDerivative()#.to(device) # Commented out .to(device) to force CPU
+dfdc_net = FEDerivative().to(device)
 dfdc_net.double()
 optimizer = optim.Adam(dfdc_net.parameters(), lr=config["learning_rate"])
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
@@ -268,55 +269,48 @@ for epoch in range(start_epoch, num_epochs):
             target_final_global = target_global.copy()
 
         if save_video_frame_now:
-            multi_ts_video_frame_fig = plot_multi_timestep_comparison(epoch + 1, comparison_data)
-            if multi_ts_video_frame_fig:
-                wandb.log({"video_frame": wandb.Image(multi_ts_video_frame_fig)}, commit=False)
-                plt.close(multi_ts_video_frame_fig)
+            pass # wandb plotting disabled
 
         if save_dfdc_plot_now:
-            dfdc_fig = plot_dfdc_vs_c(dfdc_net, device)
-            if dfdc_fig:
-                wandb.log({"dfdc_plot": wandb.Image(dfdc_fig)}, commit=False)
-                plt.close(dfdc_fig)
+            pass # wandb plotting disabled
 
         if save_min_loss_plots_now:
-            dfdc_fig_min = plot_dfdc_vs_c(dfdc_net, device)
-            if dfdc_fig_min:
-                wandb.log({"dfdc_plot_min_loss": wandb.Image(dfdc_fig_min)}, commit=False)
-                plt.close(dfdc_fig_min)
-            
-            multi_ts_fig = plot_multi_timestep_comparison(epoch + 1, comparison_data)
-            if multi_ts_fig:
-                wandb.log({"multi_timestep_comparison_min_loss": wandb.Image(multi_ts_fig)}, commit=False)
-                plt.close(multi_ts_fig)
+            pass # wandb plotting disabled
+
+    # --- NPZ Checkpointing ---
+    if (epoch + 1) % npz_save_freq == 0 or epoch == num_epochs - 1:
+        print(f"Saving .npz data at epoch {epoch + 1}...")
+        # Generate nn output vs c plot data
+        c_values_nn = np.linspace(0, 1, 200).reshape(-1, 1)
+        c_tensor_nn = torch.from_numpy(c_values_nn).to(device)
+        with torch.no_grad():
+            nn_output_values = dfdc_net(c_tensor_nn).cpu().numpy()
+
+        np.savez(output_dir / "post_processing_data.npz",
+                 preds_collection=np.array(preds_collection),
+                 epochs_collection=np.array(epochs_collection),
+                 target_final_global=target_final_global,
+                 all_epochs_comparison_data=np.array(all_epochs_comparison_data, dtype=object),
+                 c_values_nn=c_values_nn,
+                 nn_output_values=nn_output_values,
+                 epoch_losses=np.array(epoch_losses),
+                 epoch_numbers=np.array(epoch_numbers),
+                 nn_output_label=np.array("df/dc"))
+        
+        # Save the npz file to wandb
+        wandb.save(str(output_dir / "post_processing_data.npz"))
+
 
 print("Training finished (adjoint update).")
 # Create one combined plot with all collected checkpoint epochs (only last timestep)
-combined_fig = plot_combined_final_timestep(preds_collection, epochs_collection, target_final_global)
-if combined_fig:
-    wandb.log({"combined_final_timestep_plot": wandb.Image(combined_fig)})
-    plt.close(combined_fig)
+# combined_fig = plot_combined_final_timestep(preds_collection, epochs_collection, target_final_global)
+# if combined_fig:
+#     wandb.log({"combined_final_timestep_plot": wandb.Image(combined_fig)})
+#     plt.close(combined_fig)
 
 # Plot the learned df/dc curve
-dfdc_fig_final = plot_dfdc_vs_c(dfdc_net, device)
-if dfdc_fig_final:
-    wandb.log({"dfdc_plot_final": wandb.Image(dfdc_fig_final)})
-    plt.close(dfdc_fig_final)
-# Save data for post-processing
-# Generate df/dc vs c plot data
-c_values_dfdc = np.linspace(0, 1, 200).reshape(-1, 1)
-c_tensor_dfdc = torch.from_numpy(c_values_dfdc).to(device)
-with torch.no_grad():
-    dfdc_values = dfdc_net(c_tensor_dfdc).cpu().numpy()
-
-np.savez(output_dir / "post_processing_data.npz",
-         preds_collection=np.array(preds_collection),
-         epochs_collection=np.array(epochs_collection),
-         target_final_global=target_final_global,
-         all_epochs_comparison_data=np.array(all_epochs_comparison_data, dtype=object),
-         c_values_dfdc=c_values_dfdc,
-         dfdc_values=dfdc_values,
-         epoch_losses=np.array(epoch_losses),
-         epoch_numbers=np.array(epoch_numbers))
-
+# dfdc_fig_final = plot_dfdc_vs_c(dfdc_net, device)
+# if dfdc_fig_final:
+#     wandb.log({"dfdc_plot_final": wandb.Image(dfdc_fig_final)})
+#     plt.close(dfdc_fig_final)
 wandb.finish()
