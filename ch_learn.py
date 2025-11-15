@@ -136,6 +136,10 @@ for epoch in range(start_epoch, num_epochs):
 
     continue_annotation()
 
+    if (epoch + 1) == 3500:
+        optimizer.param_groups[0]['lr'] /= 10
+        print(f"Learning rate reduced to {optimizer.param_groups[0]['lr']} at epoch {epoch + 1}")
+
     # reset solution
     u_curr = u_ic.copy(deepcopy=True)
 
