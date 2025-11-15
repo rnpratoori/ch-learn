@@ -24,8 +24,8 @@ vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
 # Hyperparameters
 # ----------------------
 config = {
-    "learning_rate": 1e-3,
-    "epochs": 100,
+    "learning_rate": 1e-4,
+    "epochs": 5000,
     "seed": 12,
 }
 
@@ -178,7 +178,7 @@ for epoch in range(start_epoch, num_epochs):
         fft_t = torch.fft.fft(t_tensor)
         loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
         
-        weight = 1.0 if i <= 20 else 1.0
+        weight = 2.0 if i <= 40 else 1.0
         
         (weight * loss_i).backward()
         grad_u_tensor = u_tensor.grad
