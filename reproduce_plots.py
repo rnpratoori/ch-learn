@@ -107,23 +107,68 @@ def reproduce_plots(npz_path):
 
     data = np.load(npz_path, allow_pickle=True)
 
+    # --- Find min loss epoch ---
+    min_loss_idx = -1
+    min_loss_epoch = -1
+    if 'epoch_losses' in data and len(data['epoch_losses']) > 0:
+        min_loss_idx = np.argmin(data['epoch_losses'])
+        if 'epoch_numbers' in data:
+            min_loss_epoch = data['epoch_numbers'][min_loss_idx]
+            print(f"\nMinimum loss of {data['epoch_losses'][min_loss_idx]} found at epoch {min_loss_epoch}.")
+        else:
+            # Fallback if epoch_numbers is not there for some reason
+            min_loss_epoch = min_loss_idx + 1
+            print(f"\nMinimum loss of {data['epoch_losses'][min_loss_idx]} found at index {min_loss_idx} (epoch number may vary).")
+    else:
+        print("\nLoss data not found, cannot determine minimum loss epoch.")
+
+
     # --- 1. Plot combined final timestep ---
     print("Generating combined final timestep plot...")
-    combined_fig = plot_combined_final_timestep(
-        data['preds_collection'],
-        data['epochs_collection'],
-        data['target_final_global']
-    )
-    if combined_fig:
-        combined_fig.savefig(plot_output_dir / "combined_final_timestep.png")
-        plt.close(combined_fig)
-        print(f"Saved combined final timestep plot.")
+    if 'preds_collection' in data and 'epochs_collection' in data and 'target_final_global' in data:
+        combined_fig = plot_combined_final_timestep(
+            data['preds_collection'],
+            data['epochs_collection'],
+            data['target_final_global']
+        )
+        if combined_fig:
+            combined_fig.savefig(plot_output_dir / "combined_final_timestep.png")
+            plt.close(combined_fig)
+            print(f"Saved combined final timestep plot.")
+    else:
+        print("Skipping combined final timestep plot: Data not found in .npz file.")
+
+    # --- Generate plots for min loss epoch ---
+    if min_loss_epoch != -1:
+        print(f"\nGenerating additional plots for minimum loss epoch {min_loss_epoch}...")
+
+        # --- 1a. Plot combined final timestep for min loss epoch ---
+        if 'preds_collection' in data and 'epochs_collection' in data:
+            epoch_in_collection_idx = np.where(data['epochs_collection'] == min_loss_epoch)[0]
+            if len(epoch_in_collection_idx) > 0:
+                idx = epoch_in_collection_idx[0]
+                print("Generating combined final timestep plot for min loss epoch...")
+                min_loss_fig = plot_combined_final_timestep(
+                    [data['preds_collection'][idx]],
+                    [data['epochs_collection'][idx]],
+                    data['target_final_global']
+                )
+                if min_loss_fig:
+                    min_loss_fig.savefig(plot_output_dir / f"combined_final_timestep_min_loss_epoch_{min_loss_epoch}.png")
+                    plt.close(min_loss_fig)
+                    print(f"Saved combined final timestep plot for min loss epoch.")
+            else:
+                print("Could not find prediction data for min loss epoch in preds_collection.")
+
+        # --- 2a. Note about nn_output_vs_c for min loss ---
+        print("Note: The nn_output_vs_c plot is generated for the final model state, as intermediate model states are not saved in the .npz file.")
+
 
     # --- 2. Plot nn output vs c ---
-    print("\nGenerating nn output vs c plot...")
+    print("\nGenerating nn output vs c plot (for final model state)...")
     if 'c_values_nn' in data and 'nn_output_values' in data and 'nn_output_label' in data:
         ylabel = str(data['nn_output_label'])
-        title = f"Learned {ylabel} vs. Concentration"
+        title = f"Learned {ylabel} vs. Concentration (Final Epoch)"
         plot_nn_output_vs_c_from_data(
             data['c_values_nn'],
             data['nn_output_values'],
@@ -149,34 +194,45 @@ def reproduce_plots(npz_path):
     print("\nGenerating multi-timestep comparison plots...")
     if 'all_epochs_comparison_data' in data:
         all_epochs_data = data['all_epochs_comparison_data']
-        num_epochs = len(all_epochs_data)
         
-        # Recreate the frequencies from ch_learn.py
-        video_frame_save_freq = max(1, num_epochs // 100)
-        
-        min_loss_epoch = -1
-        if 'epoch_losses' in data:
-            min_loss_epoch = data['epoch_numbers'][np.argmin(data['epoch_losses'])]
+        # Try to determine total epochs from the data for frequency calculation
+        num_epochs_from_data = 0
+        if 'epoch_numbers' in data and len(data['epoch_numbers']) > 0:
+            num_epochs_from_data = data['epoch_numbers'][-1]
+        elif len(all_epochs_data) > 0:
+            num_epochs_from_data = all_epochs_data[-1]['epoch'] + 1
 
+        # Recreate the frequencies from ch_learn.py if possible
+        video_frame_save_freq = 1
+        if num_epochs_from_data > 0:
+            video_frame_save_freq = max(1, num_epochs_from_data // 100)
+        
         for epoch_data in all_epochs_data:
             epoch = epoch_data['epoch']
             
             plot_now = False
-            if (epoch + 1) % video_frame_save_freq == 0 or (epoch + 1) == num_epochs:
+            # Plot if it's a video frame, the last epoch, or the min loss epoch
+            if (epoch + 1) % video_frame_save_freq == 0:
+                plot_now = True
+            if num_epochs_from_data > 0 and (epoch + 1) == num_epochs_from_data:
                 plot_now = True
             if (epoch + 1) == min_loss_epoch:
                 plot_now = True
 
             if plot_now:
+                filename_suffix = f"_epoch_{epoch+1}"
+                if (epoch + 1) == min_loss_epoch:
+                    filename_suffix = f"_min_loss_epoch_{epoch+1}"
+
                 plot_multi_timestep_comparison_2d_from_data(
                     epoch + 1,
                     epoch_data['data'],
-                    plot_output_dir / f"multi_ts_comparison_2d_epoch_{epoch+1}.png"
+                    plot_output_dir / f"multi_ts_comparison_2d{filename_suffix}.png"
                 )
                 plot_multi_timestep_comparison_3d_from_data(
                     epoch + 1,
                     epoch_data['data'],
-                    plot_output_dir / f"multi_ts_comparison_3d_epoch_{epoch+1}.png"
+                    plot_output_dir / f"multi_ts_comparison_3d{filename_suffix}.png"
                 )
     else:
         print("Skipping multi-timestep plots: Data not found in .npz file.")
