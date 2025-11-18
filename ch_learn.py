@@ -172,15 +172,13 @@ for epoch in range(start_epoch, num_epochs):
         if i == 0 or (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
             comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
 
-        # --- LOSS CALCULATION (FFT) ---
+        # --- LOSS CALCULATION (MSE) ---
         u_curr_np = u_curr.sub(0).dat.data_ro
         target_np = c_target_list[i].dat.data_ro
         u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
         t_tensor = torch.tensor(target_np, device=device)
 
-        fft_u = torch.fft.fft(u_tensor)
-        fft_t = torch.fft.fft(t_tensor)
-        loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
+        loss_i = 0.5 * torch.mean((u_tensor - t_tensor)**2)
         
         weight = 5.0 if i <= 40 else 1.0
         
