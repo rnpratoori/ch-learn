@@ -116,7 +116,7 @@ wandb.init(project="ch_learn", config=config)
 # Load from checkpoint if available and not disabled
 start_epoch = 0
 if not args.no_resume:
-    start_epoch = load_checkpoint(dfdc_net, optimizer, device, output_dir)
+    start_epoch = load_checkpoint(dfdc_net, device, optimizer, device, output_dir)
 else:
     print("Starting training from scratch as requested by --no-resume flag.")
 preds_collection = []    # list of ndarray, each is full global DOF vector for a checkpoint epoch
