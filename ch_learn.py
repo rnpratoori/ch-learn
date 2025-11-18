@@ -25,8 +25,9 @@ vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
 # ----------------------
 config = {
     "learning_rate": 1e-4,
-    "epochs": 5000,
+    "epochs": 100,
     "seed": 12,
+    "alpha_lip": 1e-4,  # Lipschitz regularization strength
 }
 
 num_epochs = config["epochs"]
@@ -53,6 +54,21 @@ class FEDerivative(nn.Module):
 
     def forward(self, c):
         return self.mlp(c)
+
+def estimate_lipschitz_constant(model, inputs):
+    inputs = inputs.clone().detach().requires_grad_(True)
+    outputs = model(inputs)
+    grad_outputs = torch.ones_like(outputs)
+    gradients = torch.autograd.grad(
+        outputs=outputs,
+        inputs=inputs,
+        grad_outputs=grad_outputs,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True
+    )[0]
+    grad_norms = gradients.norm(2, dim=1)
+    return grad_norms.max()
 
 # Seeds
 torch.manual_seed(config["seed"])
@@ -211,6 +227,7 @@ for epoch in range(start_epoch, num_epochs):
     backprop_start = time.perf_counter()
     optimizer.zero_grad()
 
+    # Backpropagate gradient from adjoint (MSE loss)
     for i in range(num_timesteps):
         c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
         c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device)
@@ -220,7 +237,16 @@ for epoch in range(start_epoch, num_epochs):
         sens_i_tensor = torch.from_numpy(dJ_dcs_i_np.astype(np.float64)).reshape(-1, 1).to(device)
 
         scalar_for_backprop = torch.sum(dfdc_i_tensor * sens_i_tensor)
-        scalar_for_backprop.backward()
+        # We need to retain the graph here because we'll do another backward pass for the Lipschitz penalty
+        scalar_for_backprop.backward(retain_graph=True)
+
+    # Backpropagate gradient from Lipschitz penalty
+    all_c_inputs_np = np.concatenate([c.dat.data_ro for c in c_inputs]).reshape(-1, 1)
+    all_c_inputs_tensor = torch.from_numpy(all_c_inputs_np).to(device).requires_grad_(True)
+    
+    lip_const = estimate_lipschitz_constant(dfdc_net, all_c_inputs_tensor)
+    lip_penalty = config["alpha_lip"] * lip_const
+    lip_penalty.backward()
 
     optimizer.step()
     backprop_time = time.perf_counter() - backprop_start
@@ -235,18 +261,30 @@ for epoch in range(start_epoch, num_epochs):
 
     # --- LOGGING ---
     elapsed_time = time.perf_counter() - epoch_t0
-    loss_epoch = J_total_log
-    scheduler.step(loss_epoch)
+    mse_loss_epoch = J_total_log
+    total_loss_epoch = mse_loss_epoch + lip_penalty.item()
+    
+    scheduler.step(total_loss_epoch)
     save_min_loss_plots_now = False
 
-    epoch_losses.append(loss_epoch)
+    epoch_losses.append(total_loss_epoch)
     epoch_numbers.append(epoch + 1)
 
-    print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={J_total_log:.6e}")
-    wandb.log({"loss": loss_epoch, "epoch": epoch})
+    print(f"Epoch {epoch+1}/{num_epochs} | "
+          f"Total Loss: {total_loss_epoch:.6f} | "
+          f"MSE Loss: {mse_loss_epoch:.6f} | "
+          f"Lip Const: {lip_const.item():.6f} | "
+          f"Lip Penalty: {lip_penalty.item():.6f}")
+    wandb.log({
+        "total_loss": total_loss_epoch,
+        "mse_loss": mse_loss_epoch,
+        "lip_const": lip_const.item(),
+        "lip_penalty": lip_penalty.item(),
+        "epoch": epoch
+    })
 
-    if loss_epoch < min_loss:
-        min_loss = loss_epoch
+    if total_loss_epoch < min_loss:
+        min_loss = total_loss_epoch
         print(f"New minimum loss: {min_loss:.6e}. Saving plots.")
         save_min_loss_plots_now = True
 
