@@ -26,6 +26,7 @@ config = {
     "learning_rate": 1e-4,
     "epochs": 5000,
     "seed": 12,
+    "alpha_lip": 1e-4,  # Lipschitz regularization strength
 }
 
 checkpoint_filename = "ch_learn_energy_model.pth"
@@ -46,6 +47,21 @@ class FEnergy(nn.Module):
 
     def forward(self, c):
         return self.mlp(c)
+
+def estimate_lipschitz_constant(model, inputs):
+    inputs = inputs.clone().detach().requires_grad_(True)
+    outputs = model(inputs)
+    grad_outputs = torch.ones_like(outputs)
+    gradients = torch.autograd.grad(
+        outputs=outputs,
+        inputs=inputs,
+        grad_outputs=grad_outputs,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True
+    )[0]
+    grad_norms = gradients.norm(2, dim=1)
+    return grad_norms.max()
 
 # Seeds
 torch.manual_seed(config["seed"])
@@ -174,17 +190,15 @@ for epoch in range(start_epoch, num_epochs):
         if (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
             comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
 
-        # --- LOSS CALCULATION (FFT) ---
+        # --- LOSS CALCULATION (MSE) ---
         u_curr_np = u_curr.sub(0).dat.data_ro
         target_np = c_target_list[i].dat.data_ro
         u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
         t_tensor = torch.tensor(target_np, device=device)
 
-        fft_u = torch.fft.fft(u_tensor)
-        fft_t = torch.fft.fft(t_tensor)
-        loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
+        loss_i = 0.5 * torch.mean((u_tensor - t_tensor)**2)
         
-        weight = 1.0 if i <= 20 else 1.0
+        weight = 1.0 if i <= 40 else 1.0
         
         (weight * loss_i).backward()
         grad_u_tensor = u_tensor.grad
