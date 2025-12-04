@@ -25,7 +25,7 @@ vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
 # ----------------------
 config = {
     "learning_rate": 1e-4,
-    "epochs": 5000,
+    "epochs": 10,
     "seed": 12,
 }
 
@@ -80,13 +80,13 @@ args = parser.parse_args()
 # Problem setup
 # ----------------------
 lmbda = 5e-2
-dt = 1e-2
+dt = 1e-3
 T = 1e0
 M = 1.0
 num_timesteps = int(T / dt)
 
 # Create the mesh and function spaces
-mesh = UnitIntervalMesh(100)
+mesh = UnitIntervalMesh(500)
 V = FunctionSpace(mesh, "Lagrange", 1)
 W = V * V
 
@@ -169,7 +169,7 @@ for epoch in range(start_epoch, num_epochs):
         u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
         u_curr.assign(u_next)
 
-        if i == 0 or (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
+        if (i + 1) % 200 == 0 or (i + 1) == num_timesteps:
             comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
 
         # --- LOSS CALCULATION (FFT) ---
