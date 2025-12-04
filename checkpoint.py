@@ -14,11 +14,14 @@ def save_checkpoint(epoch, model, optimizer, epoch_losses, epoch_numbers, output
         'epoch_numbers': epoch_numbers,
     }, checkpoint_path)
     
-    # Create a wandb Artifact
-    artifact = wandb.Artifact(name="ch_learn_model", type="model")
-    artifact.add_file(str(checkpoint_path))
-    wandb.log_artifact(artifact)
-    print(f"Saved checkpoint artifact at epoch {epoch + 1}")
+    # Create a wandb Artifact if wandb is active
+    if wandb.run:
+        artifact = wandb.Artifact(name="ch_learn_model", type="model")
+        artifact.add_file(str(checkpoint_path))
+        wandb.log_artifact(artifact)
+        print(f"Saved checkpoint artifact at epoch {epoch + 1}")
+    else:
+        print(f"Saved checkpoint locally at epoch {epoch + 1}")
 
 def load_checkpoint(model, optimizer, device, output_dir, filename="ch_learn_model.pth"):
     """Loads the training state from a checkpoint file using wandb.Artifacts."""

@@ -3,7 +3,96 @@ import numpy as np
 import pyvista as pv
 from mpi4py import MPI
 
+
+class CHSolver:
+    """
+    Reusable Cahn-Hilliard solver that builds forms once and reuses the solver object.
+    This eliminates the UFL expression rebuilding overhead.
+    """
+    
+    def __init__(self, W, dt, M, lmbda):
+        """
+        Initialize the solver with problem parameters.
+        
+        Args:
+            W: Mixed function space (V * V)
+            dt: Time step size
+            M: Mobility coefficient
+            lmbda: Interface width parameter
+        """
+        self.dt = dt
+        self.M = M
+        self.lmbda = lmbda
+        
+        # Create functions once - these will be reused
+        self.u = Function(W, name="Solution")
+        self.u_ = Function(W, name="Solution_Old")
+        
+        # Get sub-functions
+        c, mu = split(self.u)
+        c_, mu_ = split(self.u_)
+        
+        # Test functions
+        v = TestFunction(W)
+        c_test, mu_test = split(v)
+        
+        # Placeholder for dfdc - will be updated each timestep
+        V = W.sub(0)
+        self.dfdc_f = Function(V, name="dfdc")
+        
+        # Build form ONCE (not 1000 times per epoch!)
+        F0 = (inner(c, c_test) - inner(c_, c_test)) * dx + \
+             (dt/2) * M * dot(grad(mu + mu_), grad(c_test)) * dx
+        F1 = inner(mu, mu_test) * dx - inner(self.dfdc_f, mu_test) * dx - \
+             lmbda**2 * dot(grad(c), grad(mu_test)) * dx
+        F = F0 + F1
+        
+        # Create solver ONCE with direct linear solver
+        solver_parameters = {
+            "ksp_type": "preonly",
+            "pc_type": "lu",
+            "pc_factor_mat_solver_type": "mumps"
+        }
+        
+        problem = NonlinearVariationalProblem(F, self.u)
+        self.solver = NonlinearVariationalSolver(problem, solver_parameters=solver_parameters)
+        
+        print("CHSolver initialized - forms built once, solver ready for reuse")
+    
+    def solve_step(self, u_old, dfdc_f, u_target):
+        """
+        Solve one timestep.
+        
+        Args:
+            u_old: Previous solution (Function)
+            dfdc_f: Neural network prediction for df/dc (Function)
+            u_target: Target solution Function to update
+            
+        Returns:
+            Updated solution (Function)
+        """
+        # Update data in existing Functions (no form rebuilding!)
+        self.u_.assign(u_old)
+        self.dfdc_f.assign(dfdc_f)
+        
+        # Solve (reuses compiled form and solver)
+        self.solver.solve()
+        
+        # Copy result to target
+        u_target.assign(self.u)
+        
+        return u_target
+    
+    def get_dfdc_function(self):
+        """Return the dfdc Function for use with adjoint."""
+        return self.dfdc_f
+
+
 def solve_one_step(u_old, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda):
+    """
+    Original solve function (kept for backward compatibility).
+    Consider using CHSolver class for better performance.
+    """
     u_ = Function(u.function_space(), name="Solution_Old")
     u_.assign(u_old)
     c_ = u_.sub(0)
