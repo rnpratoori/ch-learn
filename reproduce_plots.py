@@ -5,7 +5,7 @@ from pathlib import Path
 import argparse
 
 # Assuming plotting.py is in the same directory or accessible
-from plotting import plot_combined_final_timestep, plot_multi_timestep_comparison_2d, plot_multi_timestep_comparison_3d, plot_loss_vs_epochs
+from plotting import plot_combined_final_timestep, plot_loss_vs_epochs
 
 def plot_nn_output_vs_c_from_data(c_values, nn_output_values, ylabel, title, output_path):
     """
