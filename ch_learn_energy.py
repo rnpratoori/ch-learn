@@ -1,5 +1,11 @@
+"""
+Cahn-Hilliard Learning Script (Energy Version)
+Learns the free energy function f(c) using neural networks and adjoint methods.
+The derivative df/dc is computed via PyTorch autograd.
+"""
+
 from firedrake import *
-from firedrake.adjoint import *   # provides ReducedFunctional, Control, etc.
+from firedrake.adjoint import *
 import argparse
 import numpy as np
 import torch
@@ -10,307 +16,395 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import wandb
-from plotting import plot_combined_final_timestep, plot_nn_output_vs_c, plot_multi_timestep_comparison_2d, plot_multi_timestep_comparison_3d, plot_loss_vs_epochs
-from simulation import solve_one_step, load_target_data
+from plotting import plot_loss_vs_epochs
+from simulation import solve_one_step, load_target_data, CHSolver
 from checkpoint import save_checkpoint, load_checkpoint
 import os
 from pathlib import Path
 
-output_dir = Path(os.getenv("OUTPUT_DIR", "."))
-output_dir.mkdir(parents=True, exist_ok=True)
 
 # ----------------------
-# Hyperparameters
-# ----------------------
-config = {
-    "learning_rate": 1e-4,
-    "epochs": 10,
-    "seed": 12,
-}
-
-checkpoint_filename = "ch_learn_energy_model.pth"
-
-# ----------------------
-# PyTorch model
+# PyTorch Model
 # ----------------------
 class FEnergy(nn.Module):
-    def __init__(self):
+    """Neural network to approximate the free energy f(c)."""
+    
+    def __init__(self, hidden_size=50):
         super(FEnergy, self).__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(1, 50), # input c and t
+            nn.Linear(1, hidden_size),
             nn.LeakyReLU(),
-            nn.Linear(50, 50),
+            nn.Linear(hidden_size, hidden_size),
             nn.LeakyReLU(),
-            nn.Linear(50, 1)
+            nn.Linear(hidden_size, 1)
         )
 
     def forward(self, c):
         return self.mlp(c)
 
-# Seeds
-torch.manual_seed(config["seed"])
-np.random.seed(config["seed"])
-torch.set_default_dtype(torch.float64)
-# Instantiate network and optimizer
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-else:
-    device = torch.device("cpu")
-print(f"Using PyTorch device: {device}")
-f_net = FEnergy().to(device)
-f_net.double()
-optimizer = optim.Adam(f_net.parameters(), lr=config["learning_rate"])
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
 
 # ----------------------
-# Argument Parsing
+# Setup Functions
 # ----------------------
-parser = argparse.ArgumentParser(description='Cahn-Hilliard learning script (Energy version).')
-parser.add_argument('--no-resume', action='store_true', help='Start training from scratch, ignoring any checkpoints.')
-args = parser.parse_args()
+def parse_arguments():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description='Cahn-Hilliard learning script (Energy version).')
+    parser.add_argument('--no-resume', action='store_true', 
+                        help='Start training from scratch, ignoring checkpoints.')
+    parser.add_argument('--epochs', type=int, default=10, 
+                        help='Number of training epochs.')
+    parser.add_argument('--learning-rate', type=float, default=1e-4, 
+                        help='Learning rate for optimizer.')
+    parser.add_argument('--seed', type=int, default=12, 
+                        help='Random seed for reproducibility.')
+    parser.add_argument('--no-wandb', action='store_true', 
+                        help='Disable Weights & Biases logging.')
+    parser.add_argument('--output-dir', type=str, default=None,
+                        help='Output directory for results.')
+    parser.add_argument('--profile', action='store_true',
+                        help='Enable profiling mode (reduces epochs to 2).')
+    return parser.parse_args()
+
+
+def setup_device():
+    """Setup PyTorch device (CUDA or CPU)."""
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    print(f"Using PyTorch device: {device}")
+    return device
+
+
+def setup_problem(num_timesteps):
+    """Setup the Cahn-Hilliard problem: mesh, function spaces, and target data."""
+    # Create mesh and function spaces
+    mesh = IntervalMesh(200, 2)
+    V = FunctionSpace(mesh, "Lagrange", 1)
+    W = V * V
+    
+    # Load target data
+    c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
+    
+    # Setup initial condition
+    u_ic = Function(W, name="Initial_condition")
+    print("Setting initial condition from the first timestep of the target data.")
+    u_ic.sub(0).assign(c_target_list[0])
+    u_ic.sub(1).assign(0.0)
+    
+    # Create solution and test functions
+    u = Function(W, name="Solution")
+    c, mu = split(u)
+    v = TestFunction(W)
+    c_test, mu_test = split(v)
+    
+    return V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list
+
+
+def initialize_training(args, device, output_dir):
+    """Initialize model, optimizer, and wandb."""
+    checkpoint_filename = "ch_learn_energy_model.pth"
+    
+    # Set random seeds
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    torch.set_default_dtype(torch.float64)
+    
+    # Create model and optimizer
+    model = FEnergy().to(device)
+    model.double()
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
+    
+    # Initialize wandb
+    if not args.no_wandb:
+        config = {
+            "learning_rate": args.learning_rate,
+            "epochs": args.epochs,
+            "seed": args.seed,
+        }
+        wandb.init(project="ch_learn", config=config)
+    
+    # Load checkpoint if available
+    start_epoch = 0
+    epoch_losses = []
+    epoch_numbers = []
+    
+    if not args.no_resume:
+        start_epoch, epoch_losses, epoch_numbers = load_checkpoint(
+            model, optimizer, device, output_dir, filename=checkpoint_filename
+        )
+    else:
+        print("Starting training from scratch as requested by --no-resume flag.")
+    
+    return model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers, checkpoint_filename
+
 
 # ----------------------
-# Problem setup
+# Training Loop
 # ----------------------
-lmbda = 5e-2
-dt = 1e-3
-T = 1e0
-M = 1.0
-num_timesteps = int(T / dt)
-
-# Create the mesh and function spaces
-mesh = UnitIntervalMesh(500)
-V = FunctionSpace(mesh, "Lagrange", 1)
-W = V * V
-
-# Load the target data
-c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
-
-# Setup the initial condition
-u_ic = Function(W, name="Initial_condition")
-print("Setting initial condition from the first timestep of the target data.")
-u_ic.sub(0).assign(c_target_list[0])
-u_ic.sub(1).assign(0.0)
-
-u = Function(W, name="Solution")
-c, mu = split(u)
-v = TestFunction(W)
-c_test, mu_test = split(v)
-
-# Initialize wandb
-wandb.init(project="ch_learn", config=config)
-
-# Add frequency definitions
-num_epochs = config["epochs"]
-video_frame_save_freq = num_epochs/100
-checkpoint_freq = num_epochs/20
-plot_loss_freq = num_epochs/20
-dfdc_plot_freq = num_epochs/100
-npz_save_freq = num_epochs/10 # Save every 10% of epochs
-vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
-
-# Load from checkpoint if available and not disabled
-start_epoch = 0
-if not args.no_resume:
-    start_epoch = load_checkpoint(f_net, optimizer, device, output_dir, filename=checkpoint_filename)
-else:
-    print("Starting training from scratch as requested by --no-resume flag.")
-preds_collection = []    # list of ndarray, each is full global DOF vector for a checkpoint epoch
-epochs_collection = []   # corresponding epoch numbers
-target_final_global = None
-all_epochs_comparison_data = []
-
-
-
-min_loss = float('inf')
-epoch_losses = []
-epoch_numbers = []
-
-for epoch in range(start_epoch, num_epochs):
-    # clear previous tape
+def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu, 
+                c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
+                vtk_out, ch_solver=None, use_wandb=True):
+    """Execute one training epoch."""
+    # Clear previous tape
     get_working_tape().clear_tape()
-
+    
     epoch_t0 = time.perf_counter()
-
     continue_annotation()
-
-    if (epoch + 1) == 350:
-        optimizer.param_groups[0]['lr'] /= 10
-        print(f"Learning rate reduced to {optimizer.param_groups[0]['lr']} at epoch {epoch + 1}")
-
-    # reset solution
+    
+    # Reset solution
     u_curr = u_ic.copy(deepcopy=True)
-
+    
     # --- FORWARD PASS ---
-    simulation_start = time.perf_counter()
     c_inputs = []
     dfdc_outputs = []
-    J_adj = 0.0  # Adjoint functional for firedrake-adjoint
+    J_adj = 0.0  # Adjoint functional
     J_total_log = 0.0  # Scalar loss for logging
     comparison_data = []
-
+    
     for i in range(num_timesteps):
         c_curr = u_curr.sub(0)
         c_snapshot = Function(V, name=f"c_snapshot_{i}")
         c_snapshot.assign(c_curr)
         c_inputs.append(c_snapshot)
-
+        
+        # Neural network prediction: predict f(c), then compute df/dc via autograd
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
         c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device).requires_grad_(True)
         
         # Predict f and compute df/dc using autograd
-        f_tensor = f_net(c_tensor)
+        f_tensor = model(c_tensor)
         dfdc_tensor = torch.autograd.grad(f_tensor.sum(), c_tensor, create_graph=True)[0]
         
         dfdc_np = dfdc_tensor.detach().cpu().numpy().reshape(-1)
-
+        
+        # Create dfdc Function for adjoint tracking
         dfdc_f = Function(V, name=f"dfdc_pred_{i}")
         dfdc_f.dat.data[:] = dfdc_np
         dfdc_outputs.append(dfdc_f)
-
-        u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
+        
+        # Solve one timestep using CHSolver (reuses compiled form!)
+        if ch_solver is not None:
+            u_next = ch_solver.solve_step(u_curr, dfdc_f, u)
+        else:
+            u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
         u_curr.assign(u_next)
-
+        
+        # Store comparison data
         if (i + 1) % 200 == 0 or (i + 1) == num_timesteps:
             comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
-
+        
         # --- LOSS CALCULATION (FFT) ---
         u_curr_np = u_curr.sub(0).dat.data_ro
         target_np = c_target_list[i].dat.data_ro
         u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
         t_tensor = torch.tensor(target_np, device=device)
-
+        
         fft_u = torch.fft.fft(u_tensor)
         fft_t = torch.fft.fft(t_tensor)
         loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
         
-        weight = 1.0 if i <= 20 else 1.0
-        
+        weight = 1.0  # Uniform weight for energy version
         (weight * loss_i).backward()
         grad_u_tensor = u_tensor.grad
-
+        
         g_i = Function(V)
         g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
-
+        
         J_adj += assemble(inner(g_i, u_curr.sub(0)) * dx)
         J_total_log += weight * loss_i.item()
-
+        
+        # Write VTK output on final epoch
         if epoch == num_epochs - 1:
             t = (i + 1) * dt
             vtk_out.write(project(u_curr.sub(0), V, name="Volume Fraction"), time=t)
-
-    simulation_time = time.perf_counter() - simulation_start
-
+    
     pause_annotation()
-
+    
     # --- ADJOINT GRADIENT ---
-    adjoint_grad_start = time.perf_counter()
     controls = [Control(d) for d in dfdc_outputs]
     rf = ReducedFunctional(J_adj, controls)
-
     dJ_dcs = rf.derivative()
-    adjoint_grad_time = time.perf_counter() - adjoint_grad_start
-
-    # --- PYTORCH BACKPROPAGATION ---
-    backprop_start = time.perf_counter()
+    
+    # --- PYTORCH BACKPROPAGATION (with autograd for df/dc) ---
     optimizer.zero_grad()
-
+    
     for i in range(num_timesteps):
         c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
         c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device).requires_grad_(True)
-
+        
         # Predict f and compute df/dc to reconstruct the graph
-        f_i_tensor = f_net(c_i_tensor)
+        f_i_tensor = model(c_i_tensor)
         dfdc_i_tensor = torch.autograd.grad(f_i_tensor.sum(), c_i_tensor, create_graph=True)[0]
-
+        
         dJ_dcs_i_np = dJ_dcs[i].dat.data_ro.copy()
         sens_i_tensor = torch.from_numpy(dJ_dcs_i_np.astype(np.float64)).reshape(-1, 1).to(device)
-
-        # Backpropagate the sensitivity from the adjoint pass through the df/dc calculation
+        
+        # Backpropagate the sensitivity through the df/dc calculation
         dfdc_i_tensor.backward(gradient=sens_i_tensor)
-
+    
     optimizer.step()
-    backprop_time = time.perf_counter() - backprop_start
-
-    # --- Post-processing and data collection for this epoch ---
+    
+    # --- Post-processing ---
     processed_comparison_data = []
     for i, u_pred, c_targ in comparison_data:
         processed_comparison_data.append(
             (i, u_pred.dat.data_ro.copy(), c_targ.dat.data_ro.copy())
         )
-    all_epochs_comparison_data.append({'epoch': epoch, 'data': processed_comparison_data})
-
-
-    # --- LOGGING ---
+    
     elapsed_time = time.perf_counter() - epoch_t0
     loss_epoch = J_total_log
-    scheduler.step(loss_epoch)
-    save_min_loss_plots_now = False
+    
+    return loss_epoch, elapsed_time, u_curr, processed_comparison_data
 
-    epoch_losses.append(loss_epoch)
-    epoch_numbers.append(epoch + 1)
 
-    print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={J_total_log:.6e}")
-    wandb.log({"loss": loss_epoch, "epoch": epoch})
-
-    if loss_epoch < min_loss:
-        min_loss = loss_epoch
-        print(f"New minimum loss: {min_loss:.6e}. Saving plots.")
-        save_min_loss_plots_now = True
-
-    # --- CHECKPOINTING ---
-    if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-        save_checkpoint(epoch, f_net, optimizer, epoch_losses, epoch_numbers, output_dir, filename=checkpoint_filename)
-
-    # --- PLOT LOSS ---
-    if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
-        plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs_energy.png")
-
-    # --- Visualization ---
-    # All wandb plotting is disabled in favor of reproduce_plots.py
-    save_video_frame_now = ((epoch + 1) % video_frame_save_freq == 0) or (epoch == num_epochs - 1)
-    save_dfdc_plot_now = ((epoch + 1) % dfdc_plot_freq == 0) or (epoch == num_epochs - 1)
-    if save_video_frame_now or save_min_loss_plots_now or save_dfdc_plot_now:
+def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers,
+          V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list, device, output_dir,
+          checkpoint_filename):
+    """Main training loop."""
+    # Problem parameters
+    lmbda = 5e-2
+    dt = 1e-3
+    T = 1e0
+    M = 1.0
+    num_timesteps = int(T / dt)
+    num_epochs = args.epochs
+    
+    # Frequency parameters
+    checkpoint_freq = max(1, num_epochs // 20)
+    plot_loss_freq = max(1, num_epochs // 20)
+    npz_save_freq = max(1, num_epochs // 10)
+    
+    # VTK output
+    vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
+    
+    # Create CHSolver once for reuse across all epochs
+    ch_solver = CHSolver(W, dt, M, lmbda)
+    
+    # Training state
+    preds_collection = []
+    epochs_collection = []
+    target_final_global = None
+    all_epochs_comparison_data = []
+    min_loss = float('inf')
+    
+    use_wandb = not args.no_wandb
+    
+    for epoch in range(start_epoch, num_epochs):
+        loss_epoch, elapsed_time, u_curr, processed_comparison_data = train_epoch(
+            epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
+            c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
+            vtk_out, ch_solver, use_wandb
+        )
+        
+        # Update scheduler
+        scheduler.step(loss_epoch)
+        
+        # Store losses
+        epoch_losses.append(loss_epoch)
+        epoch_numbers.append(epoch + 1)
+        
+        # Store comparison data
+        all_epochs_comparison_data.append({'epoch': epoch, 'data': processed_comparison_data})
+        
+        # Logging
+        print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={loss_epoch:.6e}")
+        if use_wandb:
+            wandb.log({"loss": loss_epoch, "epoch": epoch})
+        
+        # Track minimum loss
+        if loss_epoch < min_loss:
+            min_loss = loss_epoch
+            print(f"New minimum loss: {min_loss:.6e}")
+        
+        # --- CHECKPOINTING ---
+        if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
+            save_checkpoint(epoch, model, optimizer, epoch_losses, epoch_numbers, 
+                          output_dir, filename=checkpoint_filename)
+        
+        # --- PLOT LOSS ---
+        if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
+            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs_energy.png")
+        
+        # --- Store predictions ---
         pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
         target_global = c_target_list[-1].dat.data_ro.copy().astype(np.float64)
-
+        
         preds_collection.append(pred_global.copy())
         epochs_collection.append(epoch + 1)
         if target_final_global is None:
             target_final_global = target_global.copy()
-
-        if save_video_frame_now:
-            pass # wandb plotting disabled
-
-        if save_dfdc_plot_now:
-            pass # wandb plotting disabled
-
-        if save_min_loss_plots_now:
-            pass # wandb plotting disabled
-
-    # --- NPZ Checkpointing ---
-    if (epoch + 1) % npz_save_freq == 0 or epoch == num_epochs - 1:
-        print(f"Saving .npz data at epoch {epoch + 1}...")
-        # Generate nn output vs c plot data
-        c_values_nn = np.linspace(0, 1, 200).reshape(-1, 1)
-        c_tensor_nn = torch.from_numpy(c_values_nn).to(device)
-        with torch.no_grad():
-            nn_output_values = f_net(c_tensor_nn).cpu().numpy()
-
-        np.savez(output_dir / "post_processing_energy.npz",
-                 preds_collection=np.array(preds_collection),
-                 epochs_collection=np.array(epochs_collection),
-                 target_final_global=target_final_global,
-                 all_epochs_comparison_data=np.array(all_epochs_comparison_data, dtype=object),
-                 c_values_nn=c_values_nn,
-                 nn_output_values=nn_output_values,
-                 epoch_losses=np.array(epoch_losses),
-                 epoch_numbers=np.array(epoch_numbers),
-                 nn_output_label=np.array("Free Energy (f)"))
         
-        # Save the npz file to wandb
-        wandb.save(str(output_dir / "post_processing_energy.npz"))
+        # --- NPZ Checkpointing ---
+        if (epoch + 1) % npz_save_freq == 0 or epoch == num_epochs - 1:
+            print(f"Saving .npz data at epoch {epoch + 1}...")
+            c_values_nn = np.linspace(0, 1, 200).reshape(-1, 1)
+            c_tensor_nn = torch.from_numpy(c_values_nn).to(device)
+            with torch.no_grad():
+                nn_output_values = model(c_tensor_nn).cpu().numpy()
+            
+            np.savez(output_dir / "post_processing_energy.npz",
+                     preds_collection=np.array(preds_collection),
+                     epochs_collection=np.array(epochs_collection),
+                     target_final_global=target_final_global,
+                     all_epochs_comparison_data=np.array(all_epochs_comparison_data, dtype=object),
+                     c_values_nn=c_values_nn,
+                     nn_output_values=nn_output_values,
+                     epoch_losses=np.array(epoch_losses),
+                     epoch_numbers=np.array(epoch_numbers),
+                     nn_output_label=np.array("Free Energy (f)"))
+            
+            if use_wandb:
+                wandb.save(str(output_dir / "post_processing_energy.npz"))
+    
+    print("Training finished.")
+    if use_wandb:
+        wandb.finish()
 
-print("Training finished (adjoint update).")
 
-wandb.finish()
+# ----------------------
+# Main Function
+# ----------------------
+def main():
+    """Main entry point."""
+    # Parse arguments
+    args = parse_arguments()
+    
+    # Override epochs if profiling
+    if args.profile:
+        print("Profiling mode enabled: reducing epochs to 2")
+        args.epochs = 2
+    
+    # Setup output directory
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = Path(os.getenv("OUTPUT_DIR", "."))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Setup device
+    device = setup_device()
+    
+    # Problem parameters
+    dt = 1e-3
+    T = 1e0
+    num_timesteps = int(T / dt)
+    
+    # Setup problem
+    V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list = setup_problem(num_timesteps)
+    
+    # Initialize training
+    model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers, checkpoint_filename = initialize_training(
+        args, device, output_dir
+    )
+    
+    # Train
+    train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers,
+          V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list, device, output_dir,
+          checkpoint_filename)
+
+
+if __name__ == "__main__":
+    main()
+
