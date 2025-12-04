@@ -2,19 +2,23 @@ from firedrake import *
 from firedrake.petsc import PETSc
 import numpy as np
 
+# Add MPI communicator
+comm = COMM_WORLD
+rank = comm.rank
+
 # Model parameters
 lmbda = 5e-2
 chi = 1
 N1 = 5
-N2 = 2
+N2 = 5
 
 # Simulation parameters
-dt = 1e-2
+dt = 1e-3
 T = 1e0
 N = T/dt
 
 # Create mesh
-mesh = UnitIntervalMesh(100)
+mesh = UnitIntervalMesh(500)
 
 # Define function space
 V = FunctionSpace(mesh, "Lagrange", 1)
@@ -39,8 +43,6 @@ u_.sub(0).dat.data[:] = ic[:, 0]  # First component
 u_.sub(1).dat.data[:] = ic[:, 1]  # Second component
 u.assign(u_)
 
-timestep = 1e-6
-
 # Define residuals
 c = variable(c)
 f = c*ln(c)/N1 + (1-c)*ln(1-c)/N2 + chi*c*(1-c)
@@ -60,11 +62,14 @@ problem = NonlinearVariationalProblem(F, u)
 t = 0.0
 n = 0
 outfile = VTKFile("ch_fh.pvd")
+outfile.write(project(c_, V, name="Volume Fraction"), time=t)
 
 while (t < T):
-    print("Solving for t = ", t, "...")
+    if rank == 0:
+        print("Solving for t = ", t, "...")
     solve(F == 0, u, solver_parameters={"ksp_type": "preonly", "pc_type": "lu", "convergence_criteria": "incremental", "pc_factor_mat_solver_type": "mumps"})
     u_.assign(u)
     t += dt
     n += 1
+    # VTKFile is parallel-aware, but only rank 0 writes the file header
     outfile.write(project(c_, V, name="Volume Fraction"), time=t)
