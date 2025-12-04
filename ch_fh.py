@@ -18,7 +18,7 @@ T = 1e0
 N = T/dt
 
 # Create mesh
-mesh = UnitIntervalMesh(500)
+mesh = IntervalMesh(200, 2)
 
 # Define function space
 V = FunctionSpace(mesh, "Lagrange", 1)
