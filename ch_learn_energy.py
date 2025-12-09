@@ -67,12 +67,14 @@ def parse_arguments():
                         help='Output directory for results.')
     parser.add_argument('--profile', action='store_true',
                         help='Enable profiling mode (reduces epochs to 2).')
+    parser.add_argument('--cpu', action='store_true',
+                        help='Force usage of CPU for PyTorch even if CUDA is available.')
     return parser.parse_args()
 
 
-def setup_device():
+def setup_device(args):
     """Setup PyTorch device (CUDA or CPU)."""
-    if torch.cuda.is_available():
+    if not args.cpu and torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
@@ -388,7 +390,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Setup device
-    device = setup_device()
+    device = setup_device(args)
     
     # Problem parameters
     dt = 1e-3

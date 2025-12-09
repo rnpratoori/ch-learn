@@ -113,6 +113,26 @@ def solve_one_step(u_old, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda):
 def load_target_data(num_timesteps, V, comm=None, rank=None):
     print("Loading target from PVD (pyvista)...")
     c_target_list = []
+    
+    # Pre-compute local-to-global index mapping based on coordinates
+    # This is necessary for parallel execution where each rank only owns a part of the mesh
+    x = SpatialCoordinate(V.mesh())
+    # Interpolate x coordinate onto V
+    x_fn = Function(V).interpolate(x[0])
+    x_local = x_fn.dat.data_ro
+    
+    # Assuming uniform mesh on [0, 2] with 200 cells (matches problem setup)
+    L = 2.0
+    N = 200
+    dx = L / N
+    
+    # Map coordinates to indices: index = round(x / dx)
+    # We use rint to round to nearest integer
+    indices = np.rint(x_local / dx).astype(int)
+    
+    # Clip indices to ensure they are within bounds (0 to 200 inclusive -> 201 points)
+    # The global data has 201 points
+    indices = np.clip(indices, 0, 200)
 
     for i in range(num_timesteps):
         reader = pv.get_reader(f"ch_fh/ch_fh_{i}.vtu")
@@ -120,6 +140,9 @@ def load_target_data(num_timesteps, V, comm=None, rank=None):
         arr_global = data.point_data["Volume Fraction"].astype(np.float64)
 
         f = Function(V, name=f"target_{i}")
-        f.dat.data[:] = arr_global
+        
+        # Assign local data using the computed indices
+        f.dat.data[:] = arr_global[indices]
+        
         c_target_list.append(f)
     return c_target_list, None, None

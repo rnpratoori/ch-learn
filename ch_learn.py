@@ -58,26 +58,28 @@ class FEDerivative(nn.Module):
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description='Cahn-Hilliard learning script.')
-    parser.add_argument('--no-resume', action='store_true', 
-                        help='Start training from scratch, ignoring checkpoints.')
-    parser.add_argument('--epochs', type=int, default=10, 
+    parser.add_argument('--epochs', type=int, default=5000, 
                         help='Number of training epochs.')
-    parser.add_argument('--learning-rate', type=float, default=1e-4, 
+    parser.add_argument('--learning-rate', type=float, default=1e-3, 
                         help='Learning rate for optimizer.')
     parser.add_argument('--seed', type=int, default=12, 
                         help='Random seed for reproducibility.')
+    parser.add_argument('--no-resume', action='store_true', 
+                        help='Start training from scratch, ignoring checkpoints.')
     parser.add_argument('--no-wandb', action='store_true', 
                         help='Disable Weights & Biases logging.')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory for results.')
     parser.add_argument('--profile', action='store_true',
                         help='Enable profiling mode (reduces epochs to 2).')
+    parser.add_argument('--cpu', action='store_true',
+                        help='Force usage of CPU for PyTorch even if CUDA is available.')
     return parser.parse_args()
 
 
-def setup_device():
+def setup_device(args):
     """Setup PyTorch device (CUDA or CPU)."""
-    if torch.cuda.is_available():
+    if not args.cpu and torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
@@ -384,7 +386,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Setup device
-    device = setup_device()
+    device = setup_device(args)
     
     # Problem parameters
     dt = 1e-3
