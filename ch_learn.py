@@ -5,6 +5,13 @@ Learns the free energy derivative using neural networks and adjoint methods.
 
 from firedrake import *
 from firedrake.adjoint import *
+import os
+
+# Set threading limits to avoid conflicts with MPI
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
 import argparse
 import numpy as np
 import torch
@@ -16,10 +23,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import wandb
 from plotting import plot_loss_vs_epochs
-from simulation import solve_one_step, load_target_data
+from simulation import solve_one_step, load_target_data, CHSolver
 from checkpoint import save_checkpoint, load_checkpoint
-import os
 from pathlib import Path
+
+# Limit PyTorch threads
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
 
 # ----------------------
