@@ -198,7 +198,7 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
         u_curr.assign(u_next)
         
         # Store comparison data
-        if (i + 1) % 200 == 0 or (i + 1) == num_timesteps:
+        if (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
             comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
         
         # --- LOSS CALCULATION (FFT) ---
@@ -211,7 +211,7 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
         fft_t = torch.fft.fft(t_tensor)
         loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
         
-        weight = 5.0 if i <= 40 else 1.0
+        weight = 10.0 if i <= 40 else 1.0
         (weight * loss_i).backward()
         grad_u_tensor = u_tensor.grad
         
@@ -268,7 +268,7 @@ def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_nu
     # Problem parameters
     lmbda = 5e-2
     dt = 1e-3
-    T = 1e0
+    T = 1e-1
     M = 1.0
     num_timesteps = int(T / dt)
     num_epochs = args.epochs
@@ -291,6 +291,15 @@ def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_nu
     target_final_global = None
     all_epochs_comparison_data = []
     min_loss = float('inf')
+
+    npz_path = output_dir / "post_processing_data.npz"
+    if start_epoch > 0 and npz_path.exists():
+        print(f"Resuming from checkpoint, loading existing .npz data from {npz_path}")
+        with np.load(npz_path, allow_pickle=True) as data:
+            preds_collection = list(data.get('preds_collection', []))
+            epochs_collection = list(data.get('epochs_collection', []))
+            target_final_global = data.get('target_final_global')
+            all_epochs_comparison_data = list(data.get('all_epochs_comparison_data', []))
     
     use_wandb = not args.no_wandb
     
@@ -390,7 +399,7 @@ def main():
     
     # Problem parameters
     dt = 1e-3
-    T = 1e0
+    T = 1e-1
     num_timesteps = int(T / dt)
     
     # Setup problem

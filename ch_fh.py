@@ -14,7 +14,7 @@ N2 = 5
 
 # Simulation parameters
 dt = 1e-3
-T = 1e0
+T = 1e-1
 N = T/dt
 
 # Create mesh
