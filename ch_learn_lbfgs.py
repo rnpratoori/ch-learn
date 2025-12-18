@@ -49,7 +49,7 @@ class FEDerivative(nn.Module):
         )
 
     def forward(self, c):
-        return self.mlp(c)
+        return 10.0 * torch.tanh(self.mlp(c))
 
 
 # ----------------------
@@ -162,13 +162,12 @@ def initialize_training(args, device, output_dir):
 # ----------------------
 # Training Loop
 # ----------------------
-def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu, 
+def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
                 c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
                 vtk_out, ch_solver=None, use_wandb=True, step_optimizer=True):
     """Execute one training epoch."""
     # Clear previous tape
     get_working_tape().clear_tape()
-    optimizer.zero_grad()
     
     epoch_t0 = time.perf_counter()
     continue_annotation()
@@ -180,7 +179,7 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
     c_inputs = []
     dfdc_outputs = []
     J_adj = 0.0  # Adjoint functional
-    J_total_log = 0.0  # Scalar loss for logging
+    J_total_tensor = torch.tensor(0.0, dtype=torch.float64, device=device)  # Use a tensor for the loss
     comparison_data = []
     
     for i in range(num_timesteps):
@@ -191,20 +190,19 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
         
         # Neural network prediction
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
-        with torch.no_grad():
-            c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
-            dfdc_np = model(c_tensor).cpu().numpy().reshape(-1)
+        c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
+        dfdc_tensor = model(c_tensor)
+        dfdc_np = dfdc_tensor.cpu().detach().numpy().reshape(-1)
         
-        # Create dfdc Function for adjoint tracking (still needed for Control)
+        # Create dfdc Function for adjoint tracking
         dfdc_f = Function(V, name=f"dfdc_pred_{i}")
         dfdc_f.dat.data[:] = dfdc_np
         dfdc_outputs.append(dfdc_f)
         
-        # Solve one timestep using CHSolver (reuses compiled form!)
+        # Solve one timestep
         if ch_solver is not None:
             u_next = ch_solver.solve_step(u_curr, dfdc_f, u)
         else:
-            # Fallback to old method
             u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
         u_curr.assign(u_next)
         
@@ -223,30 +221,34 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
         loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
         
         weight = 5.0 if i <= 40 else 1.0
-        (weight * loss_i).backward()
+        J_total_tensor = J_total_tensor + (weight * loss_i)  # Accumulate tensor loss
+
+        # This backward call is for the adjoint part, not for PyTorch's optimizer
+        loss_i_for_adj = loss_i.clone()
+        loss_i_for_adj.backward()
         grad_u_tensor = u_tensor.grad
         
         g_i = Function(V)
         g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
         
         J_adj += assemble(inner(g_i, u_curr.sub(0)) * dx)
-        J_total_log += weight * loss_i.item()
         
-        # Write VTK output on final epoch
         if epoch == num_epochs - 1 and step_optimizer:
             t = (i + 1) * dt
             vtk_out.write(project(u_curr.sub(0), V, name="Volume Fraction"), time=t)
     
     pause_annotation()
-    
+
     # --- ADJOINT GRADIENT ---
     controls = [Control(d) for d in dfdc_outputs]
     rf = ReducedFunctional(J_adj, controls)
     dJ_dcs = rf.derivative()
-    
+
     # --- PYTORCH BACKPROPAGATION ---
-    # optimizer.zero_grad() - Moved to start of function
+    optimizer.zero_grad()
     
+    # We need to re-run the model to build the graph for the final backprop
+    total_scalar_for_backprop = 0
     for i in range(num_timesteps):
         c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
         c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device)
@@ -255,8 +257,9 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
         dJ_dcs_i_np = dJ_dcs[i].dat.data_ro.copy()
         sens_i_tensor = torch.from_numpy(dJ_dcs_i_np.astype(np.float64)).reshape(-1, 1).to(device)
         
-        scalar_for_backprop = torch.sum(dfdc_i_tensor * sens_i_tensor)
-        scalar_for_backprop.backward()
+        total_scalar_for_backprop += torch.sum(dfdc_i_tensor * sens_i_tensor)
+
+    total_scalar_for_backprop.backward()
     
     if step_optimizer:
         optimizer.step()
@@ -269,9 +272,8 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
         )
     
     elapsed_time = time.perf_counter() - epoch_t0
-    loss_epoch = J_total_log
     
-    return loss_epoch, elapsed_time, u_curr, processed_comparison_data
+    return J_total_tensor, elapsed_time, u_curr, processed_comparison_data
 
 
 def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers,
@@ -317,43 +319,35 @@ def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_nu
     
     for epoch in range(start_epoch, num_epochs):
         if isinstance(optimizer, torch.optim.LBFGS):
-
             
-            # Retrieve metrics from LAST evaluation in the step?
-            # LBFGS doesn't return the metrics, so we just run one forward pass for logging?
-            # Or we can capture them from the closure using nonlocals.
-            # However, for simplicity and to avoid side-effect issues, let's just re-evaluate 
-            # or (better) accept that 'loss_epoch' is the one returned by the final closure call is inaccessible cleanly without nonlocal.
-            # Let's use the nonlocal approach.
-            
-            loss_captured = None
-            elapsed_captured = None
-            u_curr_captured = None
-            processed_data_captured = None
-
-            def closure_captured():
-                nonlocal loss_captured, elapsed_captured, u_curr_captured, processed_data_captured
+            def closure():
                 optimizer.zero_grad()
-                l, e, u_c, p_d = train_epoch(
+                loss_tensor, _, _, _ = train_epoch(
                     epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
                     c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
                     vtk_out, ch_solver, use_wandb, step_optimizer=False
                 )
-                loss_captured = l
-                elapsed_captured = e
-                u_curr_captured = u_c
-                processed_data_captured = p_d
-                return l
+                return loss_tensor
 
-            optimizer.step(closure_captured)
-            loss_epoch, elapsed_time, u_curr, processed_comparison_data = loss_captured, elapsed_captured, u_curr_captured, processed_data_captured
+            # We need to run train_epoch once outside the closure to get all the other return values
+            # The optimizer.step(closure) will re-run it internally for optimization
+            t_start_step = time.perf_counter()
+            loss_tensor, elapsed_time, u_curr, processed_comparison_data = train_epoch(
+                epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
+                c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
+                vtk_out, ch_solver, use_wandb, step_optimizer=False
+            )
+            optimizer.step(closure)
+            elapsed_time = time.perf_counter() - t_start_step # overwrite elapsed time with the full step time
+            loss_epoch = loss_tensor.item()
 
-        else:
-            loss_epoch, elapsed_time, u_curr, processed_comparison_data = train_epoch(
+        else: # For other optimizers like Adam
+            loss_tensor, elapsed_time, u_curr, processed_comparison_data = train_epoch(
                 epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
                 c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
                 vtk_out, ch_solver, use_wandb, step_optimizer=True
             )
+            loss_epoch = loss_tensor.item()
         
         # Update scheduler
         scheduler.step(loss_epoch)

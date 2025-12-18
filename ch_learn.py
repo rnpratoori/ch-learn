@@ -12,79 +12,25 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
-import argparse
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import time
+import wandb
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import wandb
+
+from training_utils import (
+    parse_arguments, setup_device, setup_output_dir, initialize_training,
+    FEDerivative
+)
+from simulation import CHSolver, load_target_data
+from checkpoint import save_checkpoint
 from plotting import plot_loss_vs_epochs
-from simulation import solve_one_step, load_target_data, CHSolver
-from checkpoint import save_checkpoint, load_checkpoint
-from pathlib import Path
 
 # Limit PyTorch threads
 torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
-
-
-# ----------------------
-# PyTorch Model
-# ----------------------
-class FEDerivative(nn.Module):
-    """Neural network to approximate the free energy derivative df/dc."""
-    
-    def __init__(self, hidden_size=50):
-        super(FEDerivative, self).__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(1, hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_size, 1)
-        )
-
-    def forward(self, c):
-        return self.mlp(c)
-
-
-# ----------------------
-# Setup Functions
-# ----------------------
-def parse_arguments():
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description='Cahn-Hilliard learning script.')
-    parser.add_argument('--epochs', type=int, default=5000, 
-                        help='Number of training epochs.')
-    parser.add_argument('--learning-rate', type=float, default=1e-3, 
-                        help='Learning rate for optimizer.')
-    parser.add_argument('--seed', type=int, default=12, 
-                        help='Random seed for reproducibility.')
-    parser.add_argument('--no-resume', action='store_true', 
-                        help='Start training from scratch, ignoring checkpoints.')
-    parser.add_argument('--no-wandb', action='store_true', 
-                        help='Disable Weights & Biases logging.')
-    parser.add_argument('--output-dir', type=str, default=None,
-                        help='Output directory for results.')
-    parser.add_argument('--profile', action='store_true',
-                        help='Enable profiling mode (reduces epochs to 2).')
-    parser.add_argument('--cpu', action='store_true',
-                        help='Force usage of CPU for PyTorch even if CUDA is available.')
-    return parser.parse_args()
-
-
-def setup_device(args):
-    """Setup PyTorch device (CUDA or CPU)."""
-    if not args.cpu and torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-    print(f"Using PyTorch device: {device}")
-    return device
 
 
 def setup_problem(num_timesteps):
@@ -95,6 +41,7 @@ def setup_problem(num_timesteps):
     W = V * V
     
     # Load target data
+    # Note: load_target_data might be slow; consider caching if often restarting
     c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
     
     # Setup initial condition
@@ -112,49 +59,26 @@ def setup_problem(num_timesteps):
     return V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list
 
 
-def initialize_training(args, device, output_dir):
-    """Initialize model, optimizer, and wandb."""
-    # Set random seeds
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    torch.set_default_dtype(torch.float64)
+def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
+    """Compute FFT-based loss and its gradient."""
+    u_curr_np = u_curr.sub(0).dat.data_ro
+    target_np = target.dat.data_ro
     
-    # Create model and optimizer
-    model = FEDerivative().to(device)
-    model.double()
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
+    u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
+    t_tensor = torch.tensor(target_np, device=device)
     
-    # Initialize wandb
-    if not args.no_wandb:
-        config = {
-            "learning_rate": args.learning_rate,
-            "epochs": args.epochs,
-            "seed": args.seed,
-        }
-        wandb.init(project="ch_learn", config=config)
+    fft_u = torch.fft.fft(u_tensor)
+    fft_t = torch.fft.fft(t_tensor)
+    loss = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
     
-    # Load checkpoint if available
-    start_epoch = 0
-    epoch_losses = []
-    epoch_numbers = []
+    (weight * loss).backward()
+    grad_u_tensor = u_tensor.grad
     
-    if not args.no_resume:
-        start_epoch, epoch_losses, epoch_numbers = load_checkpoint(
-            model, optimizer, device, output_dir
-        )
-    else:
-        print("Starting training from scratch as requested by --no-resume flag.")
-    
-    return model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers
+    return weight * loss.item(), grad_u_tensor
 
 
-# ----------------------
-# Training Loop
-# ----------------------
-def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu, 
-                c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
-                vtk_out, ch_solver=None, use_wandb=True):
+def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list, 
+                V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb=True):
     """Execute one training epoch."""
     # Clear previous tape
     get_working_tape().clear_tape()
@@ -171,9 +95,13 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
     J_adj = 0.0  # Adjoint functional
     J_total_log = 0.0  # Scalar loss for logging
     comparison_data = []
+
+    # Pre-allocate numpy arrays for efficiency if needed, but Firedrake overhead dominates
     
     for i in range(num_timesteps):
         c_curr = u_curr.sub(0)
+        
+        # Snapshot for backprop
         c_snapshot = Function(V, name=f"c_snapshot_{i}")
         c_snapshot.assign(c_curr)
         c_inputs.append(c_snapshot)
@@ -182,44 +110,32 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
         with torch.no_grad():
             c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
+            # Flatten output to match Firedrake data shape
             dfdc_np = model(c_tensor).cpu().numpy().reshape(-1)
         
-        # Create dfdc Function for adjoint tracking (still needed for Control)
+        # Create dfdc Function for solver and adjoint tracking
         dfdc_f = Function(V, name=f"dfdc_pred_{i}")
         dfdc_f.dat.data[:] = dfdc_np
         dfdc_outputs.append(dfdc_f)
         
-        # Solve one timestep using CHSolver (reuses compiled form!)
-        if ch_solver is not None:
-            u_next = ch_solver.solve_step(u_curr, dfdc_f, u)
-        else:
-            # Fallback to old method
-            u_next = solve_one_step(u_curr, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda)
+        # Solve one timestep using CHSolver
+        u_next = ch_solver.solve_step(u_curr, dfdc_f, u)
         u_curr.assign(u_next)
         
-        # Store comparison data
+        # Store comparison data for visualization
         if (i + 1) % 20 == 0 or (i + 1) == num_timesteps:
             comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
         
-        # --- LOSS CALCULATION (FFT) ---
-        u_curr_np = u_curr.sub(0).dat.data_ro
-        target_np = c_target_list[i].dat.data_ro
-        u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
-        t_tensor = torch.tensor(target_np, device=device)
+        # --- LOSS CALCULATION ---
+        # We calculate loss at every timestep? Original code did this.
+        loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device)
         
-        fft_u = torch.fft.fft(u_tensor)
-        fft_t = torch.fft.fft(t_tensor)
-        loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
-        
-        weight = 10.0 if i <= 40 else 1.0
-        (weight * loss_i).backward()
-        grad_u_tensor = u_tensor.grad
-        
+        # Inject gradient into Firedrake adjoint
         g_i = Function(V)
         g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
         
         J_adj += assemble(inner(g_i, u_curr.sub(0)) * dx)
-        J_total_log += weight * loss_i.item()
+        J_total_log += loss_val
         
         # Write VTK output on final epoch
         if epoch == num_epochs - 1:
@@ -236,54 +152,105 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
     # --- PYTORCH BACKPROPAGATION ---
     optimizer.zero_grad()
     
+    # Accumulate gradients for PyTorch model
+    total_scalar_for_backprop = torch.tensor(0.0, dtype=torch.float64, device=device)
+    
     for i in range(num_timesteps):
         c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
         c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device)
+        
+        # Re-run forward pass to get graph
+        # Note: This is efficient for small networks; for large ones, we might cache the graph or tensors
         dfdc_i_tensor = model(c_i_tensor)
         
         dJ_dcs_i_np = dJ_dcs[i].dat.data_ro.copy()
         sens_i_tensor = torch.from_numpy(dJ_dcs_i_np.astype(np.float64)).reshape(-1, 1).to(device)
         
-        scalar_for_backprop = torch.sum(dfdc_i_tensor * sens_i_tensor)
-        scalar_for_backprop.backward()
+        total_scalar_for_backprop = total_scalar_for_backprop + torch.sum(dfdc_i_tensor * sens_i_tensor)
+
+    if total_scalar_for_backprop.requires_grad:
+        total_scalar_for_backprop.backward()
     
     optimizer.step()
     
-    # --- Post-processing ---
-    processed_comparison_data = []
-    for i, u_pred, c_targ in comparison_data:
-        processed_comparison_data.append(
-            (i, u_pred.dat.data_ro.copy(), c_targ.dat.data_ro.copy())
-        )
+    # Process comparison data for return
+    processed_comparison_data = [
+        (i, u_pred.dat.data_ro.copy(), c_targ.dat.data_ro.copy())
+        for i, u_pred, c_targ in comparison_data
+    ]
     
     elapsed_time = time.perf_counter() - epoch_t0
-    loss_epoch = J_total_log
     
-    return loss_epoch, elapsed_time, u_curr, processed_comparison_data
+    return J_total_log, elapsed_time, u_curr, processed_comparison_data
 
 
-def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers,
-          V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list, device, output_dir):
-    """Main training loop."""
+def save_npz_data(output_dir, epoch, preds_collection, epochs_collection, 
+                  target_final_global, all_epochs_comparison_data, 
+                  epoch_losses, epoch_numbers, model, device, use_wandb, all_nn_outputs):
+    """Save post-processing data to .npz file."""
+    print(f"Saving .npz data at epoch {epoch}...")
+    c_values_nn = np.linspace(0, 1, 200).reshape(-1, 1)
+    c_tensor_nn = torch.from_numpy(c_values_nn).to(device)
+    with torch.no_grad():
+        nn_output_values = model(c_tensor_nn).cpu().numpy()
+
+    # Append current nn_output to the collection
+    all_nn_outputs.append({'epoch': epoch, 'output': nn_output_values})
+    
+    npz_path = output_dir / "post_processing_data.npz"
+    np.savez(npz_path,
+             preds_collection=np.array(preds_collection),
+             epochs_collection=np.array(epochs_collection),
+             target_final_global=target_final_global,
+             all_epochs_comparison_data=np.array(all_epochs_comparison_data, dtype=object),
+             c_values_nn=c_values_nn,
+             all_nn_outputs=np.array(all_nn_outputs, dtype=object),
+             epoch_losses=np.array(epoch_losses),
+             epoch_numbers=np.array(epoch_numbers),
+             nn_output_label=np.array("df/dc"))
+    
+    if use_wandb:
+        wandb.save(str(npz_path))
+
+
+def main():
+    args = parse_arguments()
+    
+    # Override epochs if profiling
+    if args.profile:
+        print("Profiling mode enabled: reducing epochs to 2")
+        args.epochs = 2
+    
+    output_dir = setup_output_dir(args)
+    device = setup_device(args)
+    
     # Problem parameters
-    lmbda = 5e-2
     dt = 1e-3
     T = 1e-1
     M = 1.0
+    lmbda = 5e-2
     num_timesteps = int(T / dt)
-    num_epochs = args.epochs
     
-    # Frequency parameters
+    # Setup problem
+    V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list = setup_problem(num_timesteps)
+    
+    # Initialize implementation
+    # NOTE: ch_learn.py previously created ch_solver inside train(), moving it here and passing it down
+    ch_solver = CHSolver(W, dt, M, lmbda)
+    
+    # Initialize training
+    model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers = initialize_training(
+        args, device, output_dir
+    )
+    
+    # Constants
+    num_epochs = args.epochs
     checkpoint_freq = max(1, num_epochs // 20)
     plot_loss_freq = max(1, num_epochs // 20)
     npz_save_freq = max(1, num_epochs // 10)
     
-    # VTK output
-    vtk_out = VTKFile(output_dir / "ch_learn_adjoint.pvd")
-    
-    # Create CHSolver once for reuse across all epochs
-    from simulation import CHSolver
-    ch_solver = CHSolver(W, dt, M, lmbda)
+    vtk_out = VTKFile(str(output_dir / "ch_learn_adjoint.pvd"))
+    use_wandb = not args.no_wandb
     
     # Training state
     preds_collection = []
@@ -291,7 +258,9 @@ def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_nu
     target_final_global = None
     all_epochs_comparison_data = []
     min_loss = float('inf')
-
+    all_nn_outputs = []
+    
+    # Resume NPZ data if needed
     npz_path = output_dir / "post_processing_data.npz"
     if start_epoch > 0 and npz_path.exists():
         print(f"Resuming from checkpoint, loading existing .npz data from {npz_path}")
@@ -300,24 +269,23 @@ def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_nu
             epochs_collection = list(data.get('epochs_collection', []))
             target_final_global = data.get('target_final_global')
             all_epochs_comparison_data = list(data.get('all_epochs_comparison_data', []))
-    
-    use_wandb = not args.no_wandb
+            all_nn_outputs = list(data.get('all_nn_outputs', []))
+
+    print(f"Starting training for {num_epochs} epochs...")
     
     for epoch in range(start_epoch, num_epochs):
         loss_epoch, elapsed_time, u_curr, processed_comparison_data = train_epoch(
-            epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
-            c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
-            vtk_out, ch_solver, use_wandb
+            epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list,
+            V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb
         )
         
         # Update scheduler
-        scheduler.step(loss_epoch)
+        if scheduler is not None:
+            scheduler.step(loss_epoch)
         
         # Store losses
         epoch_losses.append(loss_epoch)
         epoch_numbers.append(epoch + 1)
-        
-        # Store comparison data
         all_epochs_comparison_data.append({'epoch': epoch, 'data': processed_comparison_data})
         
         # Logging
@@ -325,95 +293,36 @@ def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_nu
         if use_wandb:
             wandb.log({"loss": loss_epoch, "epoch": epoch})
         
-        # Track minimum loss
         if loss_epoch < min_loss:
             min_loss = loss_epoch
             print(f"New minimum loss: {min_loss:.6e}")
         
-        # --- CHECKPOINTING ---
+        # Checkpointing
         if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-            save_checkpoint(epoch, model, optimizer, epoch_losses, epoch_numbers, output_dir)
-        
-        # --- PLOT LOSS ---
+            save_checkpoint(epoch, model, optimizer, scheduler, epoch_losses, epoch_numbers, output_dir)
+            
+        # Plotting
         if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
             plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs.png")
-        
-        # --- Store predictions ---
+            
+        # Data collection
         pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
         target_global = c_target_list[-1].dat.data_ro.copy().astype(np.float64)
-        
-        preds_collection.append(pred_global.copy())
+        preds_collection.append(pred_global)
         epochs_collection.append(epoch + 1)
+        
         if target_final_global is None:
             target_final_global = target_global.copy()
-        
-        # --- NPZ Checkpointing ---
+            
+        # NPZ Save
         if (epoch + 1) % npz_save_freq == 0 or epoch == num_epochs - 1:
-            print(f"Saving .npz data at epoch {epoch + 1}...")
-            c_values_nn = np.linspace(0, 1, 200).reshape(-1, 1)
-            c_tensor_nn = torch.from_numpy(c_values_nn).to(device)
-            with torch.no_grad():
-                nn_output_values = model(c_tensor_nn).cpu().numpy()
-            
-            np.savez(output_dir / "post_processing_data.npz",
-                     preds_collection=np.array(preds_collection),
-                     epochs_collection=np.array(epochs_collection),
-                     target_final_global=target_final_global,
-                     all_epochs_comparison_data=np.array(all_epochs_comparison_data, dtype=object),
-                     c_values_nn=c_values_nn,
-                     nn_output_values=nn_output_values,
-                     epoch_losses=np.array(epoch_losses),
-                     epoch_numbers=np.array(epoch_numbers),
-                     nn_output_label=np.array("df/dc"))
-            
-            if use_wandb:
-                wandb.save(str(output_dir / "post_processing_data.npz"))
-    
+            save_npz_data(output_dir, epoch + 1, preds_collection, epochs_collection,
+                          target_final_global, all_epochs_comparison_data,
+                          epoch_losses, epoch_numbers, model, device, use_wandb, all_nn_outputs)
+
     print("Training finished.")
     if use_wandb:
         wandb.finish()
-
-
-# ----------------------
-# Main Function
-# ----------------------
-def main():
-    """Main entry point."""
-    # Parse arguments
-    args = parse_arguments()
-    
-    # Override epochs if profiling
-    if args.profile:
-        print("Profiling mode enabled: reducing epochs to 2")
-        args.epochs = 2
-    
-    # Setup output directory
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-    else:
-        output_dir = Path(os.getenv("OUTPUT_DIR", "."))
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Setup device
-    device = setup_device(args)
-    
-    # Problem parameters
-    dt = 1e-3
-    T = 1e-1
-    num_timesteps = int(T / dt)
-    
-    # Setup problem
-    V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list = setup_problem(num_timesteps)
-    
-    # Initialize training
-    model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers = initialize_training(
-        args, device, output_dir
-    )
-    
-    # Train
-    train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers,
-          V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list, device, output_dir)
-
 
 if __name__ == "__main__":
     main()
