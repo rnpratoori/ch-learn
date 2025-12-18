@@ -57,7 +57,7 @@ def parse_arguments():
                         help='Start training from scratch, ignoring checkpoints.')
     parser.add_argument('--epochs', type=int, default=10, 
                         help='Number of training epochs.')
-    parser.add_argument('--learning-rate', type=float, default=1e-3, 
+    parser.add_argument('--learning-rate', type=float, default=0.1, 
                         help='Learning rate for optimizer.')
     parser.add_argument('--seed', type=int, default=12, 
                         help='Random seed for reproducibility.')
@@ -69,6 +69,8 @@ def parse_arguments():
                         help='Enable profiling mode (reduces epochs to 2).')
     parser.add_argument('--cpu', action='store_true',
                         help='Force usage of CPU for PyTorch even if CUDA is available.')
+    parser.add_argument('--max-iter', type=int, default=20,
+                        help='Maximum number of LBFGS iterations per optimization step.')
     return parser.parse_args()
 
 
@@ -119,7 +121,7 @@ def initialize_training(args, device, output_dir):
     # Create model and optimizer
     model = FEnergy().to(device)
     model.double()
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = optim.LBFGS(model.parameters(), lr=args.learning_rate, max_iter=args.max_iter, history_size=100, line_search_fn='strong_wolfe')
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.5)
     
     # Initialize wandb
@@ -151,10 +153,11 @@ def initialize_training(args, device, output_dir):
 # ----------------------
 def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu, 
                 c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
-                vtk_out, ch_solver=None, use_wandb=True):
+                vtk_out, ch_solver=None, use_wandb=True, step_optimizer=True):
     """Execute one training epoch."""
     # Clear previous tape
     get_working_tape().clear_tape()
+    optimizer.zero_grad()
     
     epoch_t0 = time.perf_counter()
     continue_annotation()
@@ -223,7 +226,7 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
         J_total_log += weight * loss_i.item()
         
         # Write VTK output on final epoch
-        if epoch == num_epochs - 1:
+        if epoch == num_epochs - 1 and step_optimizer:
             t = (i + 1) * dt
             vtk_out.write(project(u_curr.sub(0), V, name="Volume Fraction"), time=t)
     
@@ -235,7 +238,7 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
     dJ_dcs = rf.derivative()
     
     # --- PYTORCH BACKPROPAGATION (with autograd for df/dc) ---
-    optimizer.zero_grad()
+    # optimizer.zero_grad() - Moved to start
     
     for i in range(num_timesteps):
         c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
@@ -251,7 +254,8 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
         # Backpropagate the sensitivity through the df/dc calculation
         dfdc_i_tensor.backward(gradient=sens_i_tensor)
     
-    optimizer.step()
+    if step_optimizer:
+        optimizer.step()
     
     # --- Post-processing ---
     processed_comparison_data = []
@@ -308,11 +312,42 @@ def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_nu
     use_wandb = not args.no_wandb
     
     for epoch in range(start_epoch, num_epochs):
-        loss_epoch, elapsed_time, u_curr, processed_comparison_data = train_epoch(
-            epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
-            c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
-            vtk_out, ch_solver, use_wandb
-        )
+        if isinstance(optimizer, torch.optim.LBFGS):
+            # LBFGS Closure
+            loss_captured = None
+            elapsed_captured = None
+            u_curr_captured = None
+            processed_data_captured = None
+
+            def closure_captured():
+                nonlocal loss_captured, elapsed_captured, u_curr_captured, processed_data_captured
+                optimizer.zero_grad()
+                l, e, u_c, p_d = train_epoch(
+                    epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
+                    c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
+                    vtk_out, ch_solver, use_wandb, step_optimizer=False
+                )
+
+                loss_captured = l
+                elapsed_captured = e
+                u_curr_captured = u_c
+                processed_data_captured = p_d
+                return l
+
+
+            
+            t_start_step = time.perf_counter()
+            optimizer.step(closure_captured)
+            elapsed_time_step = time.perf_counter() - t_start_step
+
+            loss_epoch, _, u_curr, processed_comparison_data = loss_captured, elapsed_captured, u_curr_captured, processed_data_captured
+            elapsed_time = elapsed_time_step
+        else:
+            loss_epoch, elapsed_time, u_curr, processed_comparison_data = train_epoch(
+                epoch, num_epochs, model, optimizer, device, u_ic, u, c, mu,
+                c_test, mu_test, c_target_list, V, W, dt, M, lmbda, num_timesteps,
+                vtk_out, ch_solver, use_wandb, step_optimizer=True
+            )
         
         # Update scheduler
         scheduler.step(loss_epoch)

@@ -1,0 +1,136 @@
+
+import os
+import argparse
+import random
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import wandb
+from pathlib import Path
+from checkpoint import save_checkpoint, load_checkpoint
+
+# ----------------------
+# PyTorch Model
+# ----------------------
+class FEDerivative(nn.Module):
+    """Neural network to approximate the free energy derivative df/dc."""
+    
+    def __init__(self, hidden_size=50):
+        super(FEDerivative, self).__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(1, hidden_size),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size, 1)
+        )
+
+    def forward(self, c):
+        return self.mlp(c)
+
+def parse_arguments():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description='Cahn-Hilliard learning script.')
+    parser.add_argument('--epochs', type=int, default=5000, 
+                        help='Number of training epochs.')
+    parser.add_argument('--learning-rate', type=float, default=1e-3, 
+                        help='Learning rate for optimizer.')
+    parser.add_argument('--resume-lr', type=float, default=None,
+                        help='Learning rate to use when resuming from checkpoint. '
+                             'If not specified, uses --learning-rate value.')
+    parser.add_argument('--seed', type=int, default=12, 
+                        help='Random seed for reproducibility.')
+    parser.add_argument('--no-resume', action='store_true', 
+                        help='Start training from scratch, ignoring checkpoints.')
+    parser.add_argument('--no-wandb', action='store_true', 
+                        help='Disable Weights & Biases logging.')
+    parser.add_argument('--no-scheduler', action='store_true',
+                        help='Disable learning rate scheduler.')
+    parser.add_argument('--output-dir', type=str, default=None,
+                        help='Output directory for results.')
+    parser.add_argument('--profile', action='store_true',
+                        help='Enable profiling mode (reduces epochs to 2).')
+    parser.add_argument('--cpu', action='store_true',
+                        help='Force usage of CPU for PyTorch even if CUDA is available.')
+    return parser.parse_args()
+
+def setup_device(args):
+    """Setup PyTorch device (CUDA or CPU)."""
+    if not args.cpu and torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    print(f"Using PyTorch device: {device}")
+    return device
+
+def setup_output_dir(args):
+    """Setup and return the output directory path."""
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = Path(os.getenv("OUTPUT_DIR", "."))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+def initialize_training(args, device, output_dir):
+    """Initialize model, optimizer, scheduler, and wandb."""
+    # Set random seeds
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    torch.set_default_dtype(torch.float64)
+    
+    # Create model
+    model = FEDerivative().to(device)
+    model.double()
+    
+    # Create optimizer and conditionally create scheduler
+    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    scheduler = None
+    if not args.no_scheduler:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, 'min', patience=50, factor=0.5
+        )
+    else:
+        print("Learning rate scheduler is disabled.")
+
+    # Load checkpoint if available
+    start_epoch = 0
+    epoch_losses = []
+    epoch_numbers = []
+    resumed = False
+    
+    if not args.no_resume:
+        start_epoch, epoch_losses, epoch_numbers = load_checkpoint(
+            model, optimizer, scheduler, device, output_dir
+        )
+        if start_epoch > 0:
+            resumed = True
+
+    # Determine learning rate to use
+    if resumed and args.resume_lr is not None:
+        lr = args.resume_lr
+        print(f"Overriding learning rate to: {lr} (keeping optimizer momentum state)")
+        for g in optimizer.param_groups:
+            g['lr'] = lr
+    else:
+        lr = optimizer.param_groups[0]['lr']
+        if resumed:
+            print(f"Resumed with learning rate: {lr}")
+    
+    # Initialize wandb
+    if not args.no_wandb:
+        config = {
+            "learning_rate": lr,
+            "epochs": args.epochs,
+            "seed": args.seed,
+            "device": str(device),
+            "resumed": resumed,
+            "scheduler_enabled": not args.no_scheduler
+        }
+        if resumed and args.resume_lr is not None:
+            config["resume_lr"] = args.resume_lr
+        wandb.init(project="ch_learn", config=config, resume="allow")
+    
+    return model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers
