@@ -281,7 +281,13 @@ def main():
         
         # Update scheduler
         if scheduler is not None:
+            old_lr = optimizer.param_groups[0]['lr']
             scheduler.step(loss_epoch)
+            new_lr = optimizer.param_groups[0]['lr']
+            if new_lr != old_lr:
+                print(f"Learning rate updated to {new_lr:.6e}")
+                if use_wandb:
+                    wandb.log({"learning_rate": new_lr, "epoch": epoch})
         
         # Store losses
         epoch_losses.append(loss_epoch)
