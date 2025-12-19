@@ -5,9 +5,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Define the target function
-def target_function(c, chi=1.0, N1=100.0, N2=100.0):
+def target_function(c, chi=1.0, N1=5, N2=5):
     # Ensure c is within the valid range (0, 1) to avoid log(0)
-    c = np.clip(c, 1e-6, 1 - 1e-6)
+    c = np.clip(c, 1e-8, 1 - 1e-8)
     return (1 - c) * chi - c * chi + 1/N1 - 1/N2 - np.log(1 - c)/N2 + np.log(c)/N1
 
 # --- Network Architectures ---
@@ -65,6 +65,8 @@ def train_network(model, data, targets, epochs=10000, lr=1e-3):
 
         if epoch % 2000 == 0:
             print(f"Epoch {epoch}, Loss: {loss.item()}")
+    
+    return loss.item()
 
 # Generate data
 c_values = np.linspace(0.01, 0.99, 200)
@@ -81,10 +83,12 @@ models = {
     "SiLU": FEDerivative_SiLU()
 }
 predictions = {}
+final_losses = {}
 
 for name, model in models.items():
     print(f"\n--- Training {name} model ---")
-    train_network(model, c_tensor, y_tensor)
+    final_loss = train_network(model, c_tensor, y_tensor)
+    final_losses[name] = final_loss
     with torch.no_grad():
         predictions[name] = model(c_tensor).numpy()
 
@@ -96,12 +100,13 @@ colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
 linestyles = ['--', '-.', ':', '-']
 
 for i, (name, pred) in enumerate(predictions.items()):
-    plt.plot(c_values, pred, label=f"{name} Model", linestyle=linestyles[i], color=colors[i], linewidth=2)
+    final_loss = final_losses[name]
+    plt.plot(c_values, pred, label=f"{name} Model (Final Loss: {final_loss:.2e})", linestyle=linestyles[i], color=colors[i], linewidth=2)
 
 plt.title("Activation Function Comparison")
 plt.xlabel("c")
 plt.ylabel("f(c)")
 plt.legend()
 plt.grid(True)
-plt.savefig("fit_comparison.png")
+plt.savefig("fit_comparison_2x50.png")
 print("\nPlot saved to fit_comparison.png")
