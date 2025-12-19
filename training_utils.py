@@ -90,7 +90,7 @@ def initialize_training(args, device, output_dir):
     scheduler = None
     if not args.no_scheduler:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, 'min', patience=50, factor=0.5
+            optimizer, 'min', patience=50, factor=0.8
         )
     else:
         print("Learning rate scheduler is disabled.")
