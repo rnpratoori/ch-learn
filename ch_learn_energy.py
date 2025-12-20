@@ -315,45 +315,37 @@ def train(args, model, optimizer, scheduler, start_epoch, epoch_losses, epoch_nu
         )
         
         # Update scheduler
-        scheduler.step(loss_epoch)
+        scheduler.step()
         
         # Store losses
         epoch_losses.append(loss_epoch)
         epoch_numbers.append(epoch + 1)
         
-        # Store comparison data
-        all_epochs_comparison_data.append({'epoch': epoch, 'data': processed_comparison_data})
-        
-        # Logging
-        print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={loss_epoch:.6e}")
-        if use_wandb:
-            wandb.log({"loss": loss_epoch, "epoch": epoch})
-        
-        # Track minimum loss
-        if loss_epoch < min_loss:
-            min_loss = loss_epoch
-            print(f"New minimum loss: {min_loss:.6e}")
-        
-        # --- CHECKPOINTING ---
-        if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-            save_checkpoint(epoch, model, optimizer, epoch_losses, epoch_numbers, 
-                          output_dir, filename=checkpoint_filename)
-        
-        # --- PLOT LOSS ---
-        if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
-            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs_energy.png")
-        
-        # --- Store predictions ---
-        pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
-        target_global = c_target_list[-1].dat.data_ro.copy().astype(np.float64)
-        
-        preds_collection.append(pred_global.copy())
-        epochs_collection.append(epoch + 1)
-        if target_final_global is None:
-            target_final_global = target_global.copy()
         
         # --- NPZ Checkpointing ---
         if (epoch + 1) % npz_save_freq == 0 or epoch == num_epochs - 1:
+            # Store comparison data at the same frequency
+            all_epochs_comparison_data.append({'epoch': epoch, 'data': processed_comparison_data})
+            
+            # Logging
+            print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={loss_epoch:.6e}")
+            if use_wandb:
+                wandb.log({"loss": loss_epoch, "epoch": epoch})
+            
+            # Track minimum loss
+            if loss_epoch < min_loss:
+                min_loss = loss_epoch
+                print(f"New minimum loss: {min_loss:.6e}")
+            
+            # Store predictions
+            pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
+            target_global = c_target_list[-1].dat.data_ro.copy().astype(np.float64)
+            
+            preds_collection.append(pred_global.copy())
+            epochs_collection.append(epoch + 1)
+            if target_final_global is None:
+                target_final_global = target_global.copy()
+
             print(f"Saving .npz data at epoch {epoch + 1}...")
             c_values_nn = np.linspace(0, 1, 200).reshape(-1, 1)
             c_tensor_nn = torch.from_numpy(c_values_nn).to(device)

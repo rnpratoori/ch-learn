@@ -16,12 +16,10 @@ from checkpoint import save_checkpoint, load_checkpoint
 class FEDerivative(nn.Module):
     """Neural network to approximate the free energy derivative df/dc."""
     
-    def __init__(self, hidden_size=50):
+    def __init__(self, hidden_size=100):
         super(FEDerivative, self).__init__()
         self.mlp = nn.Sequential(
             nn.Linear(1, hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_size, hidden_size),
             nn.LeakyReLU(),
             nn.Linear(hidden_size, 1)
         )
@@ -46,7 +44,11 @@ def parse_arguments():
     parser.add_argument('--no-wandb', action='store_true', 
                         help='Disable Weights & Biases logging.')
     parser.add_argument('--no-scheduler', action='store_true',
-                        help='Disable learning rate scheduler.')
+                        help='DEPRECATED: Use --scheduler none instead. Disable learning rate scheduler.')
+    parser.add_argument('--scheduler', type=str, default='cosine', choices=['cosine', 'none'],
+                        help='Learning rate scheduler type.')
+    parser.add_argument('--warmup-epochs', type=int, default=100,
+                        help='Number of epochs for learning rate warm-up (only for cosine scheduler).')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory for results.')
     parser.add_argument('--profile', action='store_true',
@@ -88,12 +90,34 @@ def initialize_training(args, device, output_dir):
     # Create optimizer and conditionally create scheduler
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = None
-    if not args.no_scheduler:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, 'min', patience=50, factor=0.8
+    
+    # Handle deprecated --no-scheduler flag
+    if args.no_scheduler:
+        print("Warning: --no-scheduler is deprecated. Use --scheduler none instead.")
+        args.scheduler = 'none'
+
+    if args.scheduler == 'cosine':
+        print(f"Using cosine annealing scheduler with {args.warmup_epochs} warm-up epochs.")
+        warmup_scheduler = optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=lambda epoch: (epoch + 1) / args.warmup_epochs
         )
-    else:
+        main_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.epochs - args.warmup_epochs,
+            eta_min=1e-6
+        )
+        scheduler = optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, main_scheduler],
+            milestones=[args.warmup_epochs]
+        )
+    elif args.scheduler == 'none':
         print("Learning rate scheduler is disabled.")
+    else: # This else block will now be for 'plateau', which is removed.
+        # This part should ideally not be reached if choices are restricted in argparse.
+        # For safety, we can print a message.
+        print(f"Scheduler '{args.scheduler}' is not supported. Training without a scheduler.")
 
     # Load checkpoint if available
     start_epoch = 0
@@ -127,8 +151,11 @@ def initialize_training(args, device, output_dir):
             "seed": args.seed,
             "device": str(device),
             "resumed": resumed,
-            "scheduler_enabled": not args.no_scheduler
+            "scheduler": args.scheduler,
         }
+        if args.scheduler == 'cosine':
+            config["warmup_epochs"] = args.warmup_epochs
+        
         if resumed and args.resume_lr is not None:
             config["resume_lr"] = args.resume_lr
         wandb.init(project="ch_learn", config=config, resume="allow")
