@@ -246,8 +246,15 @@ def main():
     # Constants
     num_epochs = args.epochs
     checkpoint_freq = max(1, num_epochs // 20)
-    plot_loss_freq = max(1, num_epochs // 20)
-    npz_save_freq = max(1, num_epochs // 10)
+    
+    # New save and plot frequency logic:
+    # Aim for at least 20 saves, but save at least every 100 epochs.
+    base_freq = max(1, num_epochs // 20)
+    save_and_plot_freq = min(base_freq, 100)
+    print(f"Data and plots will be saved every {save_and_plot_freq} epochs.")
+
+    plot_loss_freq = save_and_plot_freq
+    npz_save_freq = save_and_plot_freq
     
     vtk_out = VTKFile(str(output_dir / "ch_learn_adjoint.pvd"))
     use_wandb = not args.no_wandb
@@ -279,15 +286,10 @@ def main():
             V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb
         )
         
-        # Update scheduler
+        old_lr = optimizer.param_groups[0]['lr']
         if scheduler is not None:
-            old_lr = optimizer.param_groups[0]['lr']
-            scheduler.step(loss_epoch)
-            new_lr = optimizer.param_groups[0]['lr']
-            if new_lr != old_lr:
-                print(f"Learning rate updated to {new_lr:.6e}")
-                if use_wandb:
-                    wandb.log({"learning_rate": new_lr, "epoch": epoch})
+            scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
         
         # Store losses
         epoch_losses.append(loss_epoch)
@@ -295,13 +297,17 @@ def main():
         all_epochs_comparison_data.append({'epoch': epoch, 'data': processed_comparison_data})
         
         # Logging
-        print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={loss_epoch:.6e}")
         if use_wandb:
             wandb.log({"loss": loss_epoch, "epoch": epoch})
-        
+            if scheduler is not None:
+                 wandb.log({"learning_rate": current_lr, "epoch": epoch})
+
         if loss_epoch < min_loss:
             min_loss = loss_epoch
+            print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={loss_epoch:.6e}")
             print(f"New minimum loss: {min_loss:.6e}")
+            if scheduler is not None and current_lr != old_lr:
+                print(f"Learning rate updated to {current_lr:.6e}")
         
         # Checkpointing
         if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
@@ -309,7 +315,7 @@ def main():
             
         # Plotting
         if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
-            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs.png")
+            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs.png", min_loss=min_loss)
             
         # Data collection
         pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
