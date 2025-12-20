@@ -1,5 +1,5 @@
 from firedrake import *
-from firedrake.petsc import PETSc
+
 import numpy as np
 
 # Add MPI communicator

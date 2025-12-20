@@ -4,11 +4,11 @@ import argparse
 import random
 import numpy as np
 import torch
-import torch.nn as nn
+
 import torch.optim as optim
 import wandb
 from pathlib import Path
-from checkpoint import save_checkpoint, load_checkpoint
+from checkpoint import load_checkpoint
 
 
 

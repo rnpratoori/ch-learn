@@ -1,6 +1,6 @@
 """Neural network model for learning the free energy f(c)."""
 
-import torch
+
 import torch.nn as nn
 
 

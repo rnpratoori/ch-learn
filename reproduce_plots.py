@@ -1,7 +1,7 @@
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
-import sys
+
 from pathlib import Path
 import argparse
 import shutil
