@@ -1,6 +1,6 @@
 """
-Cahn-Hilliard Learning Script
-Learns the free energy derivative using neural networks and adjoint methods.
+Cahn-Hilliard Learning Script (Energy Version)
+Learns the free energy f(c) using neural networks and adjoint methods.
 """
 
 from firedrake import *
@@ -23,7 +23,7 @@ matplotlib.use("Agg")
 from training_utils import (
     parse_arguments, setup_device, setup_output_dir, initialize_training
 )
-from models.dfdc import FEDerivative
+from models.energy import FEnergy
 from simulation import CHSolver, load_target_data
 from checkpoint import save_checkpoint
 from plotting import plot_loss_vs_epochs
@@ -41,7 +41,6 @@ def setup_problem(num_timesteps):
     W = V * V
     
     # Load target data
-    # Note: load_target_data might be slow; consider caching if often restarting
     c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
     
     # Setup initial condition
@@ -96,8 +95,6 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
     J_total_log = 0.0  # Scalar loss for logging
     comparison_data = []
 
-    # Pre-allocate numpy arrays for efficiency if needed, but Firedrake overhead dominates
-    
     for i in range(num_timesteps):
         c_curr = u_curr.sub(0)
         
@@ -106,12 +103,15 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
         c_snapshot.assign(c_curr)
         c_inputs.append(c_snapshot)
         
-        # Neural network prediction
+        # Neural network prediction: predict f(c), then compute df/dc via autograd
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
-        with torch.no_grad():
-            c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
-            # Flatten output to match Firedrake data shape
-            dfdc_np = model(c_tensor).cpu().numpy().reshape(-1)
+        c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device).requires_grad_(True)
+        
+        # Predict f and compute df/dc using autograd
+        f_tensor = model(c_tensor)
+        dfdc_tensor = torch.autograd.grad(f_tensor.sum(), c_tensor, create_graph=True)[0]
+        
+        dfdc_np = dfdc_tensor.detach().cpu().numpy().reshape(-1)
         
         # Create dfdc Function for solver and adjoint tracking
         dfdc_f = Function(V, name=f"dfdc_pred_{i}")
@@ -127,7 +127,6 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
             comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
         
         # --- LOSS CALCULATION ---
-        # We calculate loss at every timestep? Original code did this.
         loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device)
         
         # Inject gradient into Firedrake adjoint
@@ -149,27 +148,22 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
     rf = ReducedFunctional(J_adj, controls)
     dJ_dcs = rf.derivative()
     
-    # --- PYTORCH BACKPROPAGATION ---
+    # --- PYTORCH BACKPROPAGATION (with autograd for df/dc) ---
     optimizer.zero_grad()
-    
-    # Accumulate gradients for PyTorch model
-    total_scalar_for_backprop = torch.tensor(0.0, dtype=torch.float64, device=device)
     
     for i in range(num_timesteps):
         c_i_vec = c_inputs[i].dat.data_ro.copy().astype(np.float64)
-        c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device)
+        c_i_tensor = torch.from_numpy(c_i_vec.reshape(-1, 1)).to(device).requires_grad_(True)
         
-        # Re-run forward pass to get graph
-        # Note: This is efficient for small networks; for large ones, we might cache the graph or tensors
-        dfdc_i_tensor = model(c_i_tensor)
+        # Predict f and compute df/dc to reconstruct the graph
+        f_i_tensor = model(c_i_tensor)
+        dfdc_i_tensor = torch.autograd.grad(f_i_tensor.sum(), c_i_tensor, create_graph=True)[0]
         
         dJ_dcs_i_np = dJ_dcs[i].dat.data_ro.copy()
         sens_i_tensor = torch.from_numpy(dJ_dcs_i_np.astype(np.float64)).reshape(-1, 1).to(device)
         
-        total_scalar_for_backprop = total_scalar_for_backprop + torch.sum(dfdc_i_tensor * sens_i_tensor)
-
-    if total_scalar_for_backprop.requires_grad:
-        total_scalar_for_backprop.backward()
+        # Backpropagate the sensitivity through the df/dc calculation
+        dfdc_i_tensor.backward(gradient=sens_i_tensor)
     
     optimizer.step()
     
@@ -197,7 +191,7 @@ def save_npz_data(output_dir, epoch, preds_collection, epochs_collection,
     # Append current nn_output to the collection
     all_nn_outputs.append({'epoch': epoch, 'output': nn_output_values})
     
-    npz_path = output_dir / "post_processing_data.npz"
+    npz_path = output_dir / "post_processing_energy.npz"
     np.savez(npz_path,
              preds_collection=np.array(preds_collection),
              epochs_collection=np.array(epochs_collection),
@@ -207,7 +201,7 @@ def save_npz_data(output_dir, epoch, preds_collection, epochs_collection,
              all_nn_outputs=np.array(all_nn_outputs, dtype=object),
              epoch_losses=np.array(epoch_losses),
              epoch_numbers=np.array(epoch_numbers),
-             nn_output_label=np.array("df/dc"))
+             nn_output_label=np.array("Free Energy (f)"))
     
     if use_wandb:
         wandb.save(str(npz_path))
@@ -234,12 +228,11 @@ def main():
     # Setup problem
     V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list = setup_problem(num_timesteps)
     
-    # Initialize implementation
-    # NOTE: ch_learn.py previously created ch_solver inside train(), moving it here and passing it down
+    # Initialize CH solver
     ch_solver = CHSolver(W, dt, M, lmbda)
     
     # Create model
-    model = FEDerivative()
+    model = FEnergy()
     
     # Initialize training
     model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers = initialize_training(
@@ -250,8 +243,7 @@ def main():
     num_epochs = args.epochs
     checkpoint_freq = max(1, num_epochs // 20)
     
-    # New save and plot frequency logic:
-    # Aim for at least 20 saves, but save at least every 100 epochs.
+    # Save and plot frequency logic
     base_freq = max(1, num_epochs // 20)
     save_and_plot_freq = min(base_freq, 100)
     print(f"Data and plots will be saved every {save_and_plot_freq} epochs.")
@@ -259,7 +251,7 @@ def main():
     plot_loss_freq = save_and_plot_freq
     npz_save_freq = save_and_plot_freq
     
-    vtk_out = VTKFile(str(output_dir / "ch_learn_adjoint.pvd"))
+    vtk_out = VTKFile(str(output_dir / "ch_learn_energy_adjoint.pvd"))
     use_wandb = not args.no_wandb
     
     # Training state
@@ -271,7 +263,7 @@ def main():
     all_nn_outputs = []
     
     # Resume NPZ data if needed
-    npz_path = output_dir / "post_processing_data.npz"
+    npz_path = output_dir / "post_processing_energy.npz"
     if start_epoch > 0 and npz_path.exists():
         print(f"Resuming from checkpoint, loading existing .npz data from {npz_path}")
         with np.load(npz_path, allow_pickle=True) as data:
