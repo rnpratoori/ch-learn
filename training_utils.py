@@ -10,22 +10,7 @@ import wandb
 from pathlib import Path
 from checkpoint import save_checkpoint, load_checkpoint
 
-# ----------------------
-# PyTorch Model
-# ----------------------
-class FEDerivative(nn.Module):
-    """Neural network to approximate the free energy derivative df/dc."""
-    
-    def __init__(self, hidden_size=100):
-        super(FEDerivative, self).__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(1, hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_size, 1)
-        )
 
-    def forward(self, c):
-        return self.mlp(c)
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -75,16 +60,16 @@ def setup_output_dir(args):
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
-def initialize_training(args, device, output_dir):
-    """Initialize model, optimizer, scheduler, and wandb."""
+def initialize_training(args, model, device, output_dir):
+    """Initialize optimizer, scheduler, and wandb."""
     # Set random seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.set_default_dtype(torch.float64)
     
-    # Create model
-    model = FEDerivative().to(device)
+    # Ensure model is on correct device and dtype
+    model = model.to(device)
     model.double()
     
     # Create optimizer and conditionally create scheduler
