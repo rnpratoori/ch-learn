@@ -318,7 +318,7 @@ def main():
             
         # Plotting
         if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
-            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "loss_vs_epochs.png", min_loss=min_loss)
+            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "lve_dfdc.png", min_loss=min_loss)
             
         # Data collection
         pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
