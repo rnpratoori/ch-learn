@@ -281,6 +281,18 @@ def main():
             all_epochs_comparison_data = list(data.get('all_epochs_comparison_data', []))
             all_nn_outputs = list(data.get('all_nn_outputs', []))
 
+    if args.scheduler == 'plateau' and args.warmup_epochs > 0:
+        warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=lambda epoch: (epoch + 1) / args.warmup_epochs
+        )
+        # Manually set the last epoch if resuming
+        if start_epoch > 0:
+            for i in range(start_epoch):
+                warmup_scheduler.step()
+    else:
+        warmup_scheduler = None
+
     print(f"Starting training for {num_epochs} epochs...")
     
     for epoch in range(start_epoch, num_epochs):
@@ -291,7 +303,13 @@ def main():
         
         old_lr = optimizer.param_groups[0]['lr']
         if scheduler is not None:
-            scheduler.step()
+            if args.scheduler == 'plateau':
+                if epoch < args.warmup_epochs:
+                    warmup_scheduler.step()
+                else:
+                    scheduler.step(loss_epoch)
+            else:
+                scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
         
         # Store losses
