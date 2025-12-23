@@ -11,7 +11,7 @@ def target_function(c, chi=1.0, N1=5, N2=5):
     c = np.clip(c, 1e-8, 1 - 1e-8)
     return (1 - c) * chi - c * chi + 1/N1 - 1/N2 - np.log(1 - c)/N2 + np.log(c)/N1
 
-depth = 50-20
+depth = 5030
 layers = 2
 
 # --- Network Architecture ---
@@ -21,8 +21,8 @@ class FEDerivative(nn.Module):
         
         module_list = [nn.Linear(1, 50), activation_fn()]
         for _ in range(layers - 1):
-            module_list.extend([nn.Linear(50, 20), activation_fn()])
-        module_list.append(nn.Linear(20, 1))
+            module_list.extend([nn.Linear(50, 30), activation_fn()])
+        module_list.append(nn.Linear(30, 1))
 
         self.mlp = nn.Sequential(*module_list)
 
