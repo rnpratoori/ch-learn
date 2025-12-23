@@ -7,12 +7,12 @@ import torch.nn as nn
 class FEDerivative(nn.Module):
     """Neural network to approximate the free energy derivative df/dc."""
     
-    def __init__(self, hidden_size=50):
+    def __init__(self, hidden_size=20):
         super(FEDerivative, self).__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(1, 20),
+            nn.Linear(1, 50),
             nn.Tanh(),
-            nn.Linear(20, hidden_size),
+            nn.Linear(50, hidden_size),
             nn.Tanh(),
             nn.Linear(hidden_size, 1)
         )
