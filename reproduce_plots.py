@@ -121,119 +121,107 @@ def plot_nn_output_animation(c_values, all_nn_outputs, ylabel, output_path):
 
 def plot_simulation_data_3d(all_epochs_data, output_path):
     """
-    Creates an interactive 3D Plotly plot of the simulation data (pred, targ, error)
-    with a slider to select the epoch and a dropdown to select the surface.
-    Saves the plot as an HTML file.
+    Creates interactive 3D Plotly plots of the simulation data (pred, targ, error).
+    Saves the plots as separate HTML files for each view.
     """
     if len(all_epochs_data) == 0:
         print("No simulation data to write to Plotly file.")
         return
 
-    try:
-        fig = go.Figure()
+    output_dir = output_path.parent
+    base_name = output_path.stem.replace('_3d', '')
 
-        # Determine dimensions from the first epoch
-        first_epoch_data = all_epochs_data[0]['data']
-        if not first_epoch_data:
-            print("Epoch data is empty, cannot determine dimensions.")
-            return
+    plot_configs = [
+        {'label': 'Prediction', 'visible_pattern': [True, False, False], 'filename': f'{base_name}_prediction_3d.html'},
+        {'label': 'Target', 'visible_pattern': [False, True, False], 'filename': f'{base_name}_target_3d.html'},
+        {'label': 'Prediction and Target', 'visible_pattern': [True, True, False], 'filename': f'{base_name}_prediction_and_target_3d.html'},
+        {'label': 'Error', 'visible_pattern': [False, False, True], 'filename': f'{base_name}_error_3d.html'}
+    ]
 
-        num_sim_timesteps = len(first_epoch_data)
-        num_dofs = first_epoch_data[0][1].size
+    for config in plot_configs:
+        try:
+            fig = go.Figure()
 
-        x_coords = np.arange(num_dofs)
-
-        # Add traces for each epoch
-        for epoch_data in all_epochs_data:
-            epoch_num = epoch_data['epoch']
-            
-            if len(epoch_data['data']) != num_sim_timesteps:
+            # Determine dimensions from the first epoch
+            first_epoch_data = all_epochs_data[0]['data']
+            if not first_epoch_data:
+                print("Epoch data is empty, cannot determine dimensions.")
                 continue
 
-            t_coords = np.array([d[0] for d in epoch_data['data']])
-            C_pred = np.array([d[1] for d in epoch_data['data']])
-            C_targ = np.array([d[2] for d in epoch_data['data']])
-            C_err = C_pred - C_targ
+            num_sim_timesteps = len(first_epoch_data)
+            num_dofs = first_epoch_data[0][1].size
+            x_coords = np.arange(num_dofs)
+
+            # Add traces for each epoch
+            for epoch_data in all_epochs_data:
+                if len(epoch_data['data']) != num_sim_timesteps:
+                    continue
+
+                t_coords = np.array([d[0] for d in epoch_data['data']])
+                C_pred = np.array([d[1] for d in epoch_data['data']])
+                C_targ = np.array([d[2] for d in epoch_data['data']])
+                C_err = C_pred - C_targ
+                
+                X, T = np.meshgrid(x_coords, t_coords)
+
+                # Add surfaces for prediction, target, and error for each epoch
+                fig.add_trace(go.Surface(z=C_pred, x=X, y=T, name='Prediction', colorscale=[[0, "red"], [1, "red"]], showscale=False, visible=False))
+                fig.add_trace(go.Surface(z=C_targ, x=X, y=T, name='Target', colorscale=[[0, "blue"], [1, "blue"]], showscale=False, visible=False))
+                fig.add_trace(go.Surface(z=C_err, x=X, y=T, name='Error', colorscale=[[0, "green"], [1, "green"]], showscale=False, visible=False))
+
+            # Create and add slider for epochs
+            steps = []
+            traces_per_epoch = 3
             
-            X, T = np.meshgrid(x_coords, t_coords)
+            for i, epoch_data in enumerate(all_epochs_data):
+                epoch_num = epoch_data['epoch']
+                visibility = [False] * len(fig.data)
+                
+                # Apply visibility pattern for the current epoch
+                for trace_idx, is_visible in enumerate(config['visible_pattern']):
+                    if is_visible:
+                        visibility[i * traces_per_epoch + trace_idx] = True
 
-            # Add surfaces for prediction, target, and error for each epoch
-            fig.add_trace(go.Surface(z=C_pred, x=X, y=T, name=f'Prediction', colorscale=[[0, 'blue'], [1, 'blue']], showscale=False, visible=False))
-            fig.add_trace(go.Surface(z=C_targ, x=X, y=T, name=f'Target', colorscale=[[0, 'green'], [1, 'green']], showscale=False, visible=False))
-            fig.add_trace(go.Surface(z=C_err, x=X, y=T, name=f'Error', colorscale=[[0, 'red'], [1, 'red']], showscale=False, visible=False))
+                step = dict(
+                    method="update",
+                    args=[{"visible": visibility},
+                          {"title.text": f"Cahn-Hilliard Simulation: {config['label']} (Epoch {epoch_num})"}],
+                    label=str(epoch_num)
+                )
+                steps.append(step)
 
-        # Make the first epoch's prediction trace visible
-        if len(fig.data) > 0:
-            fig.data[0].visible = True
-
-        # Create and add slider
-        steps = []
-        for i in range(len(all_epochs_data)):
-            epoch_num = all_epochs_data[i]['epoch']
-            
-            visibility = [False] * len(fig.data)
-            visibility[i*3] = True
-            
-            step = dict(
-                method="restyle",
-                args=[{"visible": visibility}],
-                label=str(epoch_num)
-            )
-            steps.append(step)
-
-        sliders = [dict(
-            active=0,
-            currentvalue={"prefix": "Epoch: "},
-            pad={"t": 50},
-            steps=steps,
-        )]
-
-        updatemenus = [
-            dict(
+            sliders = [dict(
                 active=0,
-                buttons=list([
-                    dict(label="Prediction",
-                         method="restyle",
-                         args=[{"visible": [True, False, False] * len(all_epochs_data)}]),
-                    dict(label="Target",
-                         method="restyle",
-                         args=[{"visible": [False, True, False] * len(all_epochs_data)}]),
-                    dict(label="Prediction and Target",
-                         method="restyle",
-                         args=[{"visible": [True, True, False] * len(all_epochs_data)}]),
-                    dict(label="Error",
-                         method="restyle",
-                         args=[{"visible": [False, False, True] * len(all_epochs_data)}]),
-                ]),
-                direction="down",
-                pad={"r": 10, "t": 10},
-                showactive=True,
-                x=0.1,
-                xanchor="left",
-                y=1.1,
-                yanchor="top"
-            ),
-        ]
-        
-        initial_visibility = [True, False, False] * len(all_epochs_data)
-        for i in range(len(fig.data)):
-            fig.data[i].visible = initial_visibility[i]
-        
-        fig.update_layout(
-            sliders=sliders,
-            updatemenus=updatemenus,
-            title_text=f"Cahn-Hilliard Simulation Data (Epoch {all_epochs_data[0]['epoch']})",
-            scene=dict(
-                xaxis_title='DOF index',
-                yaxis_title='Timestep',
-                zaxis_title='Concentration (c)'),
-        )
+                currentvalue={"prefix": "Epoch: "},
+                pad={"t": 50},
+                steps=steps,
+            )]
 
-        pio.write_html(fig, output_path)
-        print(f"Saved simulation data 3D plot to {output_path}")
+            # Set initial visibility for the first epoch
+            initial_visibility = [False] * len(fig.data)
+            traces_to_make_visible = [idx for idx, is_vis in enumerate(config['visible_pattern']) if is_vis]
+            for trace_idx in traces_to_make_visible:
+                if trace_idx < len(fig.data):
+                    initial_visibility[trace_idx] = True
+            
+            for i in range(len(fig.data)):
+                fig.data[i].visible = initial_visibility[i]
+            
+            fig.update_layout(
+                sliders=sliders,
+                title_text=f"Cahn-Hilliard Simulation: {config['label']} (Epoch {all_epochs_data[0]['epoch']})",
+                scene=dict(
+                    xaxis_title='DOF index',
+                    yaxis_title='Timestep',
+                    zaxis_title='Concentration (c)'),
+            )
 
-    except Exception as e:
-        print(f"Could not create simulation data 3D plot: {e}")
+            current_output_path = output_dir / config['filename']
+            pio.write_html(fig, current_output_path)
+            print(f"Saved simulation data 3D plot to {current_output_path}")
+
+        except Exception as e:
+            print(f"Could not create simulation data 3D plot for {config['label']}: {e}")
 
 
 def plot_multi_timestep_comparison_3d_from_data(epoch, comparison_data, output_path):
@@ -256,8 +244,8 @@ def plot_multi_timestep_comparison_3d_from_data(epoch, comparison_data, output_p
     C_targ = np.array([d[2] for d in comparison_data])
 
     # Plot the prediction and target surfaces
-    ax.plot_surface(X, T, C_pred, cmap='viridis', alpha=0.7, rstride=1, cstride=5, label='Prediction')
-    ax.plot_surface(X, T, C_targ, cmap='autumn', alpha=0.7, rstride=1, cstride=5, label='Target')
+    ax.plot_surface(X, T, C_pred, color='red', alpha=0.7, rstride=1, cstride=5, label='Prediction')
+    ax.plot_surface(X, T, C_targ, color='blue', alpha=0.7, rstride=1, cstride=5, label='Target')
 
     ax.set_xlabel("DOF index")
     ax.set_ylabel("Timestep")
@@ -299,13 +287,13 @@ def plot_spacetime_error_3d(epoch, comparison_data, output_path):
         C_diff = C_pred - C_targ
 
         # Plot the error surface
-        surf = ax.plot_surface(X, T, C_diff, cmap='coolwarm', rstride=1, cstride=5)
+        surf = ax.plot_surface(X, T, C_diff, color='green', rstride=1, cstride=5)
 
         ax.set_xlabel("DOF index")
         ax.set_ylabel("Timestep")
         ax.set_zlabel("Error (Prediction - Target)")
         ax.set_title(f"Epoch {epoch} - 3D Space-Time Error (from saved data)")
-        fig.colorbar(surf, shrink=0.5, aspect=5)
+
 
         plt.tight_layout()
         fig.savefig(output_path)
