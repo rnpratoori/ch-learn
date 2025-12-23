@@ -4,30 +4,13 @@ import argparse
 import random
 import numpy as np
 import torch
-import torch.nn as nn
+
 import torch.optim as optim
 import wandb
 from pathlib import Path
-from checkpoint import save_checkpoint, load_checkpoint
+from checkpoint import load_checkpoint
 
-# ----------------------
-# PyTorch Model
-# ----------------------
-class FEDerivative(nn.Module):
-    """Neural network to approximate the free energy derivative df/dc."""
-    
-    def __init__(self, hidden_size=50):
-        super(FEDerivative, self).__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(1, hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_size, 1)
-        )
 
-    def forward(self, c):
-        return self.mlp(c)
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -46,7 +29,15 @@ def parse_arguments():
     parser.add_argument('--no-wandb', action='store_true', 
                         help='Disable Weights & Biases logging.')
     parser.add_argument('--no-scheduler', action='store_true',
-                        help='Disable learning rate scheduler.')
+                        help='DEPRECATED: Use --scheduler none instead. Disable learning rate scheduler.')
+    parser.add_argument('--scheduler', type=str, default='cosine', choices=['cosine', 'none', 'plateau'],
+                        help='Learning rate scheduler type.')
+    parser.add_argument('--warmup-epochs', type=int, default=100,
+                        help='Number of epochs for learning rate warm-up (only for cosine scheduler).')
+    parser.add_argument('--patience', type=int, default=100,
+                        help='Patience for ReduceLROnPlateau scheduler.')
+    parser.add_argument('--factor', type=float, default=0.8,
+                        help='Factor for ReduceLROnPlateau scheduler.')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory for results.')
     parser.add_argument('--profile', action='store_true',
@@ -73,27 +64,56 @@ def setup_output_dir(args):
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
-def initialize_training(args, device, output_dir):
-    """Initialize model, optimizer, scheduler, and wandb."""
+def initialize_training(args, model, device, output_dir):
+    """Initialize optimizer, scheduler, and wandb."""
     # Set random seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.set_default_dtype(torch.float64)
     
-    # Create model
-    model = FEDerivative().to(device)
+    # Ensure model is on correct device and dtype
+    model = model.to(device)
     model.double()
     
     # Create optimizer and conditionally create scheduler
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = None
-    if not args.no_scheduler:
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, 'min', patience=50, factor=0.5
+    
+    # Handle deprecated --no-scheduler flag
+    if args.no_scheduler:
+        print("Warning: --no-scheduler is deprecated. Use --scheduler none instead.")
+        args.scheduler = 'none'
+
+    if args.scheduler == 'cosine':
+        print(f"Using cosine annealing scheduler with {args.warmup_epochs} warm-up epochs.")
+        warmup_scheduler = optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=lambda epoch: (epoch + 1) / args.warmup_epochs
         )
-    else:
+        main_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=15000 - args.warmup_epochs,
+            eta_min=1e-5
+        )
+        scheduler = optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, main_scheduler],
+            milestones=[args.warmup_epochs]
+        )
+    elif args.scheduler == 'plateau':
+        print(f"Using ReduceLROnPlateau scheduler with patience {args.patience} and factor {args.factor}. Warmup handled in training loop.")
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            factor=args.factor,
+            patience=args.patience
+        )
+    elif args.scheduler == 'none':
         print("Learning rate scheduler is disabled.")
+    else: # This else block will now be for 'plateau', which is removed.
+        # This part should ideally not be reached if choices are restricted in argparse.
+        # For safety, we can print a message.
+        print(f"Scheduler '{args.scheduler}' is not supported. Training without a scheduler.")
 
     # Load checkpoint if available
     start_epoch = 0
@@ -127,8 +147,15 @@ def initialize_training(args, device, output_dir):
             "seed": args.seed,
             "device": str(device),
             "resumed": resumed,
-            "scheduler_enabled": not args.no_scheduler
+            "scheduler": args.scheduler,
         }
+        if args.scheduler == 'cosine':
+            config["warmup_epochs"] = args.warmup_epochs
+        elif args.scheduler == 'plateau':
+            config["warmup_epochs"] = args.warmup_epochs
+            config["patience"] = args.patience
+            config["factor"] = args.factor
+        
         if resumed and args.resume_lr is not None:
             config["resume_lr"] = args.resume_lr
         wandb.init(project="ch_learn", config=config, resume="allow")

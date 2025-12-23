@@ -1,5 +1,5 @@
 import torch
-import os
+
 import wandb
 
 def save_checkpoint(epoch, model, optimizer, scheduler, epoch_losses, epoch_numbers, output_dir, filename="ch_learn_model.pth"):
