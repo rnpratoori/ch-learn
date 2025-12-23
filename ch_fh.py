@@ -18,7 +18,7 @@ T = 1e-1
 N = T/dt
 
 # Create mesh
-mesh = IntervalMesh(200, 2)
+mesh = UnitCubeMesh(100, 100, 100)
 
 # Define function space
 V = FunctionSpace(mesh, "Lagrange", 1)
@@ -34,13 +34,10 @@ v = TestFunction(W)
 c_test, mu_test = split(v)
 
 # Initial condition
-rng = np.random.default_rng(11)
-num_dofs = u.sub(0).dat.data.shape[0]
-ic = np.zeros((num_dofs, 2))
-ic[:, 0] = [0.5 + 0.2 * sin(pi*i/4) for i in range(num_dofs)]
-ic[:, 1] = 0
-u_.sub(0).dat.data[:] = ic[:, 0]  # First component
-u_.sub(1).dat.data[:] = ic[:, 1]  # Second component
+x, y, z = SpatialCoordinate(mesh)
+ic_expr = 0.5 + 0.05 * (sin(10*x)*sin(10*y)*sin(10*z) + cos(15*x)*sin(5*y)*cos(5*z) - sin(20*x)*cos(20*y))
+u_.sub(0).interpolate(ic_expr)
+u_.sub(1).assign(0.0)
 u.assign(u_)
 
 # Define residuals

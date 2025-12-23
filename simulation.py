@@ -112,28 +112,29 @@ def solve_one_step(u_old, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda):
 
 def load_target_data(num_timesteps, V, comm=None, rank=None):
     print("Loading target from PVD (pyvista)...")
+    from scipy.spatial import KDTree
+    
     c_target_list = []
     
-    # Pre-compute local-to-global index mapping based on coordinates
-    # This is necessary for parallel execution where each rank only owns a part of the mesh
-    x = SpatialCoordinate(V.mesh())
-    # Interpolate x coordinate onto V
-    x_fn = Function(V).interpolate(x[0])
-    x_local = x_fn.dat.data_ro
+    # Read the first file to establish the coordinate mapping
+    # We assume the mesh geometry is constant over time
+    reader = pv.get_reader("ch_fh/ch_fh_0.vtu")
+    mesh_data = reader.read()
+    vtk_points = mesh_data.points
     
-    # Assuming uniform mesh on [0, 2] with 200 cells (matches problem setup)
-    L = 2.0
-    N = 200
-    dx = L / N
+    # Build KDTree for nearest neighbor search
+    print("Building KDTree for mesh mapping...")
+    tree = KDTree(vtk_points)
     
-    # Map coordinates to indices: index = round(x / dx)
-    # We use rint to round to nearest integer
-    indices = np.rint(x_local / dx).astype(int)
+    # Get Firedrake DOF coordinates
+    # Note: tabulated coordinates match the .dat.data ordering
+    fd_coords = V.tabulate_dof_coordinates()
     
-    # Clip indices to ensure they are within bounds (0 to 200 inclusive -> 201 points)
-    # The global data has 201 points
-    indices = np.clip(indices, 0, 200)
+    # Find nearest VTK point for each Firedrake DOF
+    print("Mapping coordinates...")
+    _, indices = tree.query(fd_coords)
 
+    print(f"Loading {num_timesteps} timesteps...")
     for i in range(num_timesteps):
         reader = pv.get_reader(f"ch_fh/ch_fh_{i}.vtu")
         data = reader.read()
@@ -141,8 +142,9 @@ def load_target_data(num_timesteps, V, comm=None, rank=None):
 
         f = Function(V, name=f"target_{i}")
         
-        # Assign local data using the computed indices
+        # Assign data using the pre-computed mapping indices
         f.dat.data[:] = arr_global[indices]
         
         c_target_list.append(f)
+        
     return c_target_list, None, None
