@@ -10,9 +10,9 @@ class FEDerivative(nn.Module):
     def __init__(self, hidden_size=50):
         super(FEDerivative, self).__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(1, hidden_size),
+            nn.Linear(1, 20),
             nn.Tanh(),
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(20, hidden_size),
             nn.Tanh(),
             nn.Linear(hidden_size, 1)
         )
