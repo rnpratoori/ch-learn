@@ -374,6 +374,12 @@ def reproduce_plots(npz_path):
     print("\nGenerating multi-timestep comparison 3D plot...")
     if 'all_epochs_comparison_data' in data:
         all_epochs_data = data['all_epochs_comparison_data']
+
+        if len(all_epochs_data) > 1000:
+            print(f"Found {len(all_epochs_data)} epochs, downsampling to 1000 for the plot.")
+            indices = np.linspace(0, len(all_epochs_data) - 1, 1000, dtype=int)
+            all_epochs_data = [all_epochs_data[i] for i in indices]
+
         output_path = plot_output_dir / "simulation_data_3d.html"
         plot_simulation_data_3d(all_epochs_data, output_path)
     
