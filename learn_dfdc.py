@@ -60,16 +60,14 @@ def setup_problem(num_timesteps):
 
 
 def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
-    """Compute FFT-based loss and its gradient."""
+    """Compute MSE loss and its gradient."""
     u_curr_np = u_curr.sub(0).dat.data_ro
     target_np = target.dat.data_ro
     
     u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
     t_tensor = torch.tensor(target_np, device=device)
     
-    fft_u = torch.fft.fft(u_tensor)
-    fft_t = torch.fft.fft(t_tensor)
-    loss = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
+    loss = 0.5 * torch.mean((u_tensor - t_tensor)**2)
     
     (weight * loss).backward()
     grad_u_tensor = u_tensor.grad
