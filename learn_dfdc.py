@@ -78,7 +78,7 @@ def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
 
 
 def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list, 
-                V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb=True):
+                V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, truncation_modes, use_wandb=True):
     """Execute one training epoch."""
     # Clear previous tape
     get_working_tape().clear_tape()
@@ -128,7 +128,7 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
         
         # --- LOSS CALCULATION ---
         # We calculate loss at every timestep? Original code did this.
-        loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device)
+        loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device, truncation_modes=truncation_modes)
         
         # Inject gradient into Firedrake adjoint
         g_i = Function(V)
@@ -298,7 +298,7 @@ def main():
     for epoch in range(start_epoch, num_epochs):
         loss_epoch, elapsed_time, u_curr, processed_comparison_data = train_epoch(
             epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list,
-            V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb
+            V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, args.truncation_modes, use_wandb
         )
         
         old_lr = optimizer.param_groups[0]['lr']

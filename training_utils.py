@@ -44,6 +44,8 @@ def parse_arguments():
                         help='Enable profiling mode (reduces epochs to 2).')
     parser.add_argument('--cpu', action='store_true',
                         help='Force usage of CPU for PyTorch even if CUDA is available.')
+    parser.add_argument('--truncation-modes', type=int, default=0,
+                        help='Number of FFT modes to use in loss calculation (0 for all).')
     return parser.parse_args()
 
 def setup_device(args):
@@ -158,6 +160,7 @@ def initialize_training(args, model, device, output_dir):
         
         if resumed and args.resume_lr is not None:
             config["resume_lr"] = args.resume_lr
+        config["truncation_modes"] = args.truncation_modes
         wandb.init(project="ch_learn", config=config, resume="allow")
     
     return model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers
