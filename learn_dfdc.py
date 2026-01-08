@@ -60,16 +60,14 @@ def setup_problem(num_timesteps):
 
 
 def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
-    """Compute FFT-based loss and its gradient."""
+    """Compute MSE loss and its gradient."""
     u_curr_np = u_curr.sub(0).dat.data_ro
     target_np = target.dat.data_ro
     
     u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
     t_tensor = torch.tensor(target_np, device=device)
     
-    fft_u = torch.fft.fft(u_tensor)
-    fft_t = torch.fft.fft(t_tensor)
-    loss = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
+    loss = 0.5 * torch.mean((u_tensor - t_tensor)**2)
     
     (weight * loss).backward()
     grad_u_tensor = u_tensor.grad
@@ -78,7 +76,7 @@ def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
 
 
 def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list, 
-                V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, truncation_modes, use_wandb=True):
+                V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb=True):
     """Execute one training epoch."""
     # Clear previous tape
     get_working_tape().clear_tape()
@@ -128,7 +126,7 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
         
         # --- LOSS CALCULATION ---
         # We calculate loss at every timestep? Original code did this.
-        loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device, truncation_modes=truncation_modes)
+        loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device)
         
         # Inject gradient into Firedrake adjoint
         g_i = Function(V)
@@ -298,7 +296,7 @@ def main():
     for epoch in range(start_epoch, num_epochs):
         loss_epoch, elapsed_time, u_curr, processed_comparison_data = train_epoch(
             epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list,
-            V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, args.truncation_modes, use_wandb
+            V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb
         )
         
         old_lr = optimizer.param_groups[0]['lr']
@@ -336,7 +334,7 @@ def main():
             
         # Plotting
         if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
-            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "lve_dfdc.png", min_loss=min_loss)
+            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "lve_dfdc.html", min_loss=min_loss)
             
         # Data collection
         pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)
