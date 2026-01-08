@@ -95,7 +95,7 @@ def initialize_training(args, model, device, output_dir):
         )
         main_scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=15000 - args.warmup_epochs,
+            T_max=args.epochs - args.warmup_epochs,
             eta_min=1e-5
         )
         scheduler = optim.lr_scheduler.SequentialLR(
