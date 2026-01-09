@@ -12,7 +12,12 @@ backup
 # Checkpoints
 *.pth
 
+# Mesh
+*.geo
+*.msh
+
 # Generated plots and videos
 *.png
 *.mp4
 *.npz
+
