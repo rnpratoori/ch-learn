@@ -58,7 +58,7 @@ def setup_problem(num_timesteps):
     return V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list
 
 
-def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
+def compute_loss_and_gradient(u_curr, target, device, truncation_modes=0, weight=1.0):
     """Compute FFT-based loss and its gradient."""
     u_curr_np = u_curr.sub(0).dat.data_ro
     target_np = target.dat.data_ro
@@ -66,7 +66,17 @@ def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
     u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
     t_tensor = torch.tensor(target_np, device=device)
     
-    loss = 0.5 * torch.mean((u_tensor - t_tensor)**2)
+    fft_u = torch.fft.fft(u_tensor)
+    fft_t = torch.fft.fft(t_tensor)
+    
+    if truncation_modes > 0:
+        # Zero out higher frequency modes
+        # This assumes the input is a 1D signal. For 2D/3D, more complex truncation is needed.
+        # Given the `mesh = IntervalMesh(200, 2)`, it's likely 1D.
+        fft_u[truncation_modes:-truncation_modes] = 0
+        fft_t[truncation_modes:-truncation_modes] = 0
+    
+    loss = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
     
     (weight * loss).backward()
     grad_u_tensor = u_tensor.grad
@@ -75,7 +85,7 @@ def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
 
 
 def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list, 
-                V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb=True):
+                V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, truncation_modes, use_wandb=True):
     """Execute one training epoch."""
     # Clear previous tape
     get_working_tape().clear_tape()
@@ -125,7 +135,7 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
             comparison_data.append((i, u_curr.sub(0).copy(deepcopy=True), c_target_list[i]))
         
         # --- LOSS CALCULATION ---
-        loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device)
+        loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device, truncation_modes=truncation_modes)
         
         # Inject gradient into Firedrake adjoint
         g_i = Function(V)
@@ -288,7 +298,7 @@ def main():
     for epoch in range(start_epoch, num_epochs):
         loss_epoch, elapsed_time, u_curr, processed_comparison_data = train_epoch(
             epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list,
-            V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb
+            V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, args.truncation_modes, use_wandb
         )
         
         old_lr = optimizer.param_groups[0]['lr']
