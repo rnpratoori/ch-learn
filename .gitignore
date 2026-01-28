@@ -1,5 +1,5 @@
-ch_learn_adjoint.pvd
-ch_learn_adjoint/
+ch_learn_*adjoint.pvd
+ch_learn_*adjoint/
 *cache*
 backup
 
