@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import plotly.express as px
 import numpy as np
@@ -59,29 +60,27 @@ def plot_combined_final_timestep(preds_collection, epochs_collection, target_fin
 
 def plot_loss_vs_epochs(epochs, losses, output_path, min_loss=None):
     """
-    Plots the training loss against epochs using Plotly and saves as HTML.
+    Plots the training loss against epochs using Matplotlib and saves as PNG.
     """
     try:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=epochs, y=losses, mode='lines+markers', name='Training Loss'))
+        fig, ax = plt.subplots()
+        ax.plot(epochs, losses, '-', label='Training Loss')
         
         if min_loss is not None:
-            fig.add_hline(y=min_loss, line_dash="dash", line_color="red", 
-                          annotation_text=f"Min Loss: {min_loss:.6e}", annotation_position="bottom right")
+            ax.axhline(y=min_loss, color='r', linestyle='--', label=f"Min Loss: {min_loss:.6e}")
             
-        fig.update_layout(
-            title="Loss vs. Epochs",
-            xaxis_title="Epoch",
-            yaxis_title="Loss (log scale)",
-            yaxis_type="log",
-            template="plotly_white"
-        )
-        # Ensure extension is .html
-        path = str(output_path)
-        if not path.endswith('.html'):
-            path = path.rsplit('.', 1)[0] + '.html'
+        ax.set(xlabel="Epoch", ylabel="Loss (log scale)", title="Loss vs. Epochs")
+        ax.set_yscale('log')
+        ax.grid(True)
+        ax.legend()
         
-        fig.write_html(path)
+        # Ensure extension is .png
+        path = str(output_path)
+        if not path.endswith('.png'):
+            path = path.rsplit('.', 1)[0] + '.png'
+        
+        fig.savefig(path)
+        plt.close(fig)
         return fig
     except Exception as e:
         print(f"Could not create loss vs epochs plot: {e}")
