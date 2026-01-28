@@ -251,7 +251,7 @@ def main():
     
     # Initialize training
     model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers = initialize_training(
-        args, model, device, output_dir
+        args, model, device, output_dir, checkpoint_filename="ch_learn_dfdc.pth"
     )
     
     # Constants
@@ -340,7 +340,7 @@ def main():
         
         # Checkpointing
         if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-            save_checkpoint(epoch, model, optimizer, scheduler, epoch_losses, epoch_numbers, output_dir)
+            save_checkpoint(epoch, model, optimizer, scheduler, epoch_losses, epoch_numbers, output_dir, filename="ch_learn_dfdc.pth")
             
         # Plotting
         if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:

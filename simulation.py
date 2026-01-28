@@ -135,7 +135,7 @@ def load_target_data(num_timesteps, V, comm=None, rank=None):
     indices = np.clip(indices, 0, 200)
 
     for i in range(num_timesteps):
-        reader = pv.get_reader(f"ch_fh/ch_fh_{i}.vtu")
+        reader = pv.get_reader(f"ch_fh_3/ch_fh_3_{i}.vtu")
         data = reader.read()
         arr_global = data.point_data["Volume Fraction"].astype(np.float64)
 

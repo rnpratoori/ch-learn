@@ -244,7 +244,7 @@ def main():
     
     # Initialize training
     model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers = initialize_training(
-        args, model, device, output_dir
+        args, model, device, output_dir, checkpoint_filename="ch_learn_energy.pth"
     )
     
     # Constants
@@ -332,11 +332,11 @@ def main():
         
         # Checkpointing
         if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
-            save_checkpoint(epoch, model, optimizer, scheduler, epoch_losses, epoch_numbers, output_dir)
+            save_checkpoint(epoch, model, optimizer, scheduler, epoch_losses, epoch_numbers, output_dir, filename="ch_learn_energy.pth")
             
         # Plotting
         if (epoch + 1) % plot_loss_freq == 0 or epoch == num_epochs - 1:
-            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "lve_f.html", min_loss=min_loss)
+            plot_loss_vs_epochs(epoch_numbers, epoch_losses, output_dir / "lve_f.png", min_loss=min_loss)
             
         # Data collection
         pred_global = u_curr.sub(0).dat.data_ro.copy().astype(np.float64)

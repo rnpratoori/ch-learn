@@ -66,7 +66,7 @@ def setup_output_dir(args):
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
-def initialize_training(args, model, device, output_dir):
+def initialize_training(args, model, device, output_dir, checkpoint_filename="ch_learn_model.pth"):
     """Initialize optimizer, scheduler, and wandb."""
     # Set random seeds
     torch.manual_seed(args.seed)
@@ -125,7 +125,7 @@ def initialize_training(args, model, device, output_dir):
     
     if not args.no_resume:
         start_epoch, epoch_losses, epoch_numbers = load_checkpoint(
-            model, optimizer, scheduler, device, output_dir
+            model, optimizer, scheduler, device, output_dir, filename=checkpoint_filename
         )
         if start_epoch > 0:
             resumed = True
