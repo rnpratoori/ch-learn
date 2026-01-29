@@ -12,9 +12,9 @@ class FEnergy(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(1, hidden_size),
             nn.LeakyReLU(),
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size, 20),
             nn.LeakyReLU(),
-            nn.Linear(hidden_size, 1)
+            nn.Linear(20, 1)
         )
 
     def forward(self, c):

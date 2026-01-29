@@ -44,6 +44,22 @@ def parse_arguments():
                         help='Enable profiling mode (reduces epochs to 2).')
     parser.add_argument('--cpu', action='store_true',
                         help='Force usage of CPU for PyTorch even if CUDA is available.')
+    # Physics parameters
+    parser.add_argument('--chi', type=float, default=1.0,
+                        help='Flory-Huggins interaction parameter chi.')
+    parser.add_argument('--N1', type=float, default=5.0,
+                        help='Degree of polymerization N1.')
+    parser.add_argument('--N2', type=float, default=5.0,
+                        help='Degree of polymerization N2.')
+    # Simulation parameters
+    parser.add_argument('--T', type=float, default=1e-1,
+                        help='Total simulation time.')
+    parser.add_argument('--dt', type=float, default=1e-3,
+                        help='Time step size.')
+    parser.add_argument('--M', type=float, default=1.0,
+                        help='Mobility parameter.')
+    parser.add_argument('--data-index', type=int, default=1,
+                        help='Index of the reference data directory (e.g., 1 for ch_fh_1).')
     return parser.parse_args()
 
 def setup_device(args):
@@ -64,7 +80,7 @@ def setup_output_dir(args):
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
-def initialize_training(args, model, device, output_dir):
+def initialize_training(args, model, device, output_dir, checkpoint_filename="ch_learn_model.pth"):
     """Initialize optimizer, scheduler, and wandb."""
     # Set random seeds
     torch.manual_seed(args.seed)
@@ -93,7 +109,7 @@ def initialize_training(args, model, device, output_dir):
         )
         main_scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=15000 - args.warmup_epochs,
+            T_max=args.epochs - args.warmup_epochs,
             eta_min=1e-5
         )
         scheduler = optim.lr_scheduler.SequentialLR(
@@ -123,7 +139,7 @@ def initialize_training(args, model, device, output_dir):
     
     if not args.no_resume:
         start_epoch, epoch_losses, epoch_numbers = load_checkpoint(
-            model, optimizer, scheduler, device, output_dir
+            model, optimizer, scheduler, device, output_dir, filename=checkpoint_filename
         )
         if start_epoch > 0:
             resumed = True

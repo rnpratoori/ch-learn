@@ -33,7 +33,7 @@ torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
 
 
-def setup_problem(num_timesteps):
+def setup_problem(num_timesteps, data_index=1):
     """Setup the Cahn-Hilliard problem: mesh, function spaces, and target data."""
     # Create mesh and function spaces
     mesh = IntervalMesh(200, 2)
@@ -41,7 +41,7 @@ def setup_problem(num_timesteps):
     W = V * V
     
     # Load target data
-    c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
+    c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0, data_index=data_index)
     
     # Setup initial condition
     u_ic = Function(W, name="Initial_condition")
@@ -178,7 +178,8 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
 
 def save_npz_data(output_dir, epoch, preds_collection, epochs_collection, 
                   target_final_global, all_epochs_comparison_data, 
-                  epoch_losses, epoch_numbers, model, device, use_wandb, all_nn_outputs):
+                  epoch_losses, epoch_numbers, model, device, use_wandb, all_nn_outputs,
+                  chi, N1, N2, T, dt, M):
     """Save post-processing data to .npz file."""
     print(f"Saving .npz data at epoch {epoch}...")
     c_values_nn = np.linspace(0, 1, 200).reshape(-1, 1)
@@ -199,7 +200,13 @@ def save_npz_data(output_dir, epoch, preds_collection, epochs_collection,
              all_nn_outputs=np.array(all_nn_outputs, dtype=object),
              epoch_losses=np.array(epoch_losses),
              epoch_numbers=np.array(epoch_numbers),
-             nn_output_label=np.array("Free Energy (f)"))
+             nn_output_label=np.array("Free Energy (f)"),
+             chi=np.array(chi),
+             N1=np.array(N1),
+             N2=np.array(N2),
+             T=np.array(T),
+             dt=np.array(dt),
+             M=np.array(M))
     
     if use_wandb:
         wandb.save(str(npz_path))
@@ -217,14 +224,16 @@ def main():
     device = setup_device(args)
     
     # Problem parameters
-    dt = 1e-3
-    T = 1e-1
-    M = 1.0
+    # Problem parameters
+    dt = args.dt
+    T = args.T
+    M = args.M
     lmbda = 5e-2
     num_timesteps = int(T / dt)
     
+    
     # Setup problem
-    V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list = setup_problem(num_timesteps)
+    V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list = setup_problem(num_timesteps, data_index=args.data_index)
     
     # Initialize CH solver
     ch_solver = CHSolver(W, dt, M, lmbda)
@@ -234,7 +243,7 @@ def main():
     
     # Initialize training
     model, optimizer, scheduler, start_epoch, epoch_losses, epoch_numbers = initialize_training(
-        args, model, device, output_dir
+        args, model, device, output_dir, checkpoint_filename="ch_learn_energy.pth"
     )
     
     # Constants
@@ -302,6 +311,9 @@ def main():
                 scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
         
+        if scheduler is not None and current_lr != old_lr:
+            print(f"Learning rate updated to {current_lr:.6e}")
+            
         # Store losses
         epoch_losses.append(loss_epoch)
         epoch_numbers.append(epoch + 1)
@@ -317,8 +329,6 @@ def main():
             min_loss = loss_epoch
             print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={loss_epoch:.6e}")
             print(f"New minimum loss: {min_loss:.6e}")
-            if scheduler is not None and current_lr != old_lr:
-                print(f"Learning rate updated to {current_lr:.6e}")
         
         # Checkpointing
         if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
@@ -341,7 +351,8 @@ def main():
         if (epoch + 1) % npz_save_freq == 0 or epoch == num_epochs - 1:
             save_npz_data(output_dir, epoch + 1, preds_collection, epochs_collection,
                           target_final_global, all_epochs_comparison_data,
-                          epoch_losses, epoch_numbers, model, device, use_wandb, all_nn_outputs)
+                          epoch_losses, epoch_numbers, model, device, use_wandb, all_nn_outputs,
+                          args.chi, args.N1, args.N2, args.T, args.dt, args.M)
 
     print("Training finished.")
     if use_wandb:
