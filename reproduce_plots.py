@@ -8,7 +8,7 @@ import shutil
 
 
 
-def plot_nn_output_animation(c_values, all_nn_outputs, ylabel, output_path):
+def plot_nn_output_animation(c_values, all_nn_outputs, ylabel, output_path, chi=None, N1=None, N2=None, epoch_list=None):
     """
     Creates an animated Plotly plot of the neural network output vs. concentration for each epoch.
     Saves the animation as an HTML file.
@@ -21,14 +21,31 @@ def plot_nn_output_animation(c_values, all_nn_outputs, ylabel, output_path):
         # Add a small epsilon to avoid log(0)
         epsilon = 1e-10
         c_safe = np.clip(c, epsilon, 1 - epsilon)
-        true_dfdc = 1 - 2 * c_safe + (np.log(c_safe) - np.log(1 - c_safe)) / 5
+        if chi is not None and N1 is not None and N2 is not None:
+             # Use dynamic physics parameters
+             if "Energy" in str(ylabel):
+                 # Formula for f: c*Log[c]/N1+(1-c)*Log[1-c]/N2+chi*c*(1-c)
+                 true_values = (c_safe * np.log(c_safe))/N1 + ((1 - c_safe) * np.log(1 - c_safe))/N2 + chi * c_safe * (1 - c_safe)
+                 label_name = "True f(c)"
+                 # Align theoretical minimum with learned minimum for better visual comparison (optional, but helpful as f is defined up to constant)
+                 # Here we just plot the theoretical absolute value.
+             else:
+                 # Formula for df/dc: chi - 2* c *chi + 1/N1 - 1/N2 - Log[1 - c]/N2 + Log[c]/N1
+                 true_values = chi - 2 * chi * c_safe + 1/N1 - 1/N2 - (np.log(1 - c_safe))/N2 + (np.log(c_safe))/N1
+                 label_name = "True df/dc"
+             print(f"Using dynamic {label_name} with chi={chi}, N1={N1}, N2={N2}")
+        else:
+             # Fallback to old hardcoded formula
+             true_values = 1 - 2 * c_safe + (np.log(c_safe) - np.log(1 - c_safe)) / 5
+             label_name = "True df/dc (Fallback)"
+             print("Using fallback true df/dc formula")
 
-        # Add trace for true df/dc
+        # Add trace for true values
         fig.add_trace(
             go.Scatter(
                 x=c,
-                y=true_dfdc,
-                name="True df/dc",
+                y=true_values,
+                name=label_name,
                 mode='lines',
                 line=dict(color='black', dash='dash')
             )
@@ -344,7 +361,10 @@ def reproduce_plots(npz_path):
         all_nn_outputs = data['all_nn_outputs']
         output_path = plot_output_dir / "nn_output_vs_c.html"
         
-        plot_nn_output_animation(c_vals, all_nn_outputs, ylabel, output_path)
+        plot_nn_output_animation(c_vals, all_nn_outputs, ylabel, output_path,
+                                 chi=float(data.get('chi')),
+                                 N1=float(data.get('N1')),
+                                 N2=float(data.get('N2')))
 
     elif 'c_values_nn' in data and 'nn_output_values' in data and 'nn_output_label' in data: # Backwards compatibility
         print("Found old format 'nn_output_values'. Plotting for final model state only.")
@@ -353,7 +373,10 @@ def reproduce_plots(npz_path):
         # Create a structure that the new animation function can understand
         all_nn_outputs = [{'epoch': data['epochs_collection'][-1], 'output': data['nn_output_values']}]
         output_path = plot_output_dir / "nn_output_vs_c.html"
-        plot_nn_output_animation(c_vals, all_nn_outputs, ylabel, output_path)
+        plot_nn_output_animation(c_vals, all_nn_outputs, ylabel, output_path,
+                                 chi=float(data.get('chi', 1.0)) if 'chi' in data else None,
+                                 N1=float(data.get('N1', 5.0)) if 'N1' in data else None,
+                                 N2=float(data.get('N2', 5.0)) if 'N2' in data else None)
 
     else:
         print("Skipping nn output animation: Data not found in .npz file.")

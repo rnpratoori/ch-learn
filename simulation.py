@@ -110,8 +110,8 @@ def solve_one_step(u_old, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda):
     })
     return u
 
-def load_target_data(num_timesteps, V, comm=None, rank=None):
-    print("Loading target from PVD (pyvista)...")
+def load_target_data(num_timesteps, V, comm=None, rank=None, data_index=1):
+    print(f"Loading target from PVD (pyvista) using index {data_index}...")
     c_target_list = []
     
     # Pre-compute local-to-global index mapping based on coordinates
@@ -135,7 +135,7 @@ def load_target_data(num_timesteps, V, comm=None, rank=None):
     indices = np.clip(indices, 0, 200)
 
     for i in range(num_timesteps):
-        reader = pv.get_reader(f"ch_fh_3/ch_fh_3_{i}.vtu")
+        reader = pv.get_reader(f"ch_fh_{data_index}/ch_fh_{data_index}_{i}.vtu")
         data = reader.read()
         arr_global = data.point_data["Volume Fraction"].astype(np.float64)
 

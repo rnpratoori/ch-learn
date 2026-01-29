@@ -46,6 +46,22 @@ def parse_arguments():
                         help='Force usage of CPU for PyTorch even if CUDA is available.')
     parser.add_argument('--truncation-modes', type=int, default=0,
                         help='Number of FFT modes to use in loss calculation (0 for all).')
+    # Physics parameters
+    parser.add_argument('--chi', type=float, default=1.0,
+                        help='Flory-Huggins interaction parameter chi.')
+    parser.add_argument('--N1', type=float, default=5.0,
+                        help='Degree of polymerization N1.')
+    parser.add_argument('--N2', type=float, default=5.0,
+                        help='Degree of polymerization N2.')
+    # Simulation parameters
+    parser.add_argument('--T', type=float, default=1e-1,
+                        help='Total simulation time.')
+    parser.add_argument('--dt', type=float, default=1e-3,
+                        help='Time step size.')
+    parser.add_argument('--M', type=float, default=1.0,
+                        help='Mobility parameter.')
+    parser.add_argument('--data-index', type=int, default=1,
+                        help='Index of the reference data directory (e.g., 1 for ch_fh_1).')
     return parser.parse_args()
 
 def setup_device(args):
