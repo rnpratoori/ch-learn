@@ -236,10 +236,11 @@ def main():
     # Problem parameters
     # Problem parameters
     dt = args.dt
-    T = args.T
+    # Enforce 100 timesteps as requested
+    num_timesteps = 100
+    T = num_timesteps * dt
     M = args.M
     lmbda = 5e-2
-    num_timesteps = int(T / dt)
     
     
     # Setup problem

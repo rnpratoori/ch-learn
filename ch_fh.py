@@ -8,13 +8,13 @@ rank = comm.rank
 
 # Model parameters
 lmbda = 5e-2
-chi = 1
-N1 = 5
-N2 = 5
+chi = 2
+N1 = 3
+N2 = 3
 
 # Simulation parameters
-dt = 1e-3
-T = 1e-1
+dt = 2e-4
+T = 2e-2
 N = T/dt
 
 # Create mesh
@@ -61,7 +61,7 @@ problem = NonlinearVariationalProblem(F, u)
 # Output
 t = 0.0
 n = 0
-outfile = VTKFile("ch_fh.pvd")
+outfile = VTKFile("ch_fh_6.pvd")
 outfile.write(project(c_, V, name="Volume Fraction"), time=t)
 
 while (t < T):

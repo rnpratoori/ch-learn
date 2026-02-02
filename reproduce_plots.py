@@ -33,6 +33,7 @@ def plot_nn_output_animation(c_values, all_nn_outputs, ylabel, output_path, chi=
                  # Formula for df/dc: chi - 2* c *chi + 1/N1 - 1/N2 - Log[1 - c]/N2 + Log[c]/N1
                  true_values = chi - 2 * chi * c_safe + 1/N1 - 1/N2 - (np.log(1 - c_safe))/N2 + (np.log(c_safe))/N1
                  label_name = "True df/dc"
+                 print("Using true df/dc formula")
              print(f"Using dynamic {label_name} with chi={chi}, N1={N1}, N2={N2}")
         else:
              # Fallback to old hardcoded formula
@@ -177,14 +178,14 @@ def plot_simulation_data_3d(all_epochs_data, output_path):
                 t_coords = np.array([d[0] for d in epoch_data['data']])
                 C_pred = np.array([d[1] for d in epoch_data['data']])
                 C_targ = np.array([d[2] for d in epoch_data['data']])
-                C_err = C_pred - C_targ
+                C_err = np.abs(C_pred - C_targ)
                 
                 X, T = np.meshgrid(x_coords, t_coords)
 
                 # Add surfaces for prediction, target, and error for each epoch
                 fig.add_trace(go.Surface(z=C_pred, x=X, y=T, name='Prediction', colorscale=[[0, "red"], [1, "red"]], showscale=False, visible=False))
                 fig.add_trace(go.Surface(z=C_targ, x=X, y=T, name='Target', colorscale=[[0, "blue"], [1, "blue"]], showscale=False, visible=False))
-                fig.add_trace(go.Surface(z=C_err, x=X, y=T, name='Error', colorscale=[[0, "green"], [1, "green"]], showscale=False, visible=False))
+                fig.add_trace(go.Surface(z=C_err, x=X, y=T, name='Error', colorscale='Bluered', cmin=0, cmax=1, colorbar=dict(title='Error'), showscale=True, visible=False))
 
             # Create and add slider for epochs
             steps = []
@@ -224,13 +225,18 @@ def plot_simulation_data_3d(all_epochs_data, output_path):
             for i in range(len(fig.data)):
                 fig.data[i].visible = initial_visibility[i]
             
+            z_axis_title = 'Concentration (c)'
+            if config['label'] == 'Error':
+                z_axis_title = 'Absolute Error |c_pred - c_targ|'
+
             fig.update_layout(
                 sliders=sliders,
                 title_text=f"Cahn-Hilliard Simulation: {config['label']} (Epoch {all_epochs_data[0]['epoch']})",
                 scene=dict(
                     xaxis_title='DOF index',
                     yaxis_title='Timestep',
-                    zaxis_title='Concentration (c)'),
+                    zaxis_title=z_axis_title
+                ),
             )
 
             current_output_path = output_dir / config['filename']
