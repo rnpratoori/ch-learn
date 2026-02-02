@@ -329,15 +329,17 @@ def main():
             else:
                 scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
-        
-        if scheduler is not None and current_lr != old_lr:
+
+        lr_changed = scheduler is not None and current_lr != old_lr
+
+        if lr_changed and args.scheduler != 'cosine':
             print(f"Learning rate updated to {current_lr:.6e}")
-            
+
         # Store losses
         epoch_losses.append(loss_epoch)
         epoch_numbers.append(epoch + 1)
         all_epochs_comparison_data.append({'epoch': epoch, 'data': processed_comparison_data})
-        
+
         # Logging
         if use_wandb:
             wandb.log({"loss": loss_epoch, "epoch": epoch})
@@ -348,6 +350,8 @@ def main():
             min_loss = loss_epoch
             print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={loss_epoch:.6e}")
             print(f"New minimum loss: {min_loss:.6e}")
+            if lr_changed and args.scheduler == 'cosine':
+                print(f"Learning rate updated to {current_lr:.6e}")
         
         # Checkpointing
         if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
