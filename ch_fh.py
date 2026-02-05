@@ -11,14 +11,16 @@ lmbda = 5e-2
 chi = 2
 N1 = 3
 N2 = 3
+M = 1
 
 # Simulation parameters
 dt = 2e-4
-T = 2e-2
+T = dt*100
 N = T/dt
+outfile = VTKFile("ch_fh_6.pvd")
 
 # Create mesh
-mesh = IntervalMesh(200, 2)
+mesh = IntervalMesh(100, 1)
 
 # Define function space
 V = FunctionSpace(mesh, "Lagrange", 1)
@@ -48,8 +50,6 @@ c = variable(c)
 f = c*ln(c)/N1 + (1-c)*ln(1-c)/N2 + chi*c*(1-c)
 dfdc = diff(f, c)
 
-# Define mobility
-M = 1
 
 F0 = (inner(c, c_test) - inner(c_, c_test)) * dx + (dt/2) * M * dot(grad(mu + mu_), grad(c_test)) * dx
 F1 = inner(mu, mu_test) * dx - inner(dfdc, mu_test) * dx - lmbda**2 * dot(grad(c), grad(mu_test)) * dx
@@ -61,7 +61,6 @@ problem = NonlinearVariationalProblem(F, u)
 # Output
 t = 0.0
 n = 0
-outfile = VTKFile("ch_fh_6.pvd")
 outfile.write(project(c_, V, name="Volume Fraction"), time=t)
 
 while (t < T):
