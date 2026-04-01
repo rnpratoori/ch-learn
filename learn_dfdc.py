@@ -36,7 +36,7 @@ torch.set_num_interop_threads(1)
 def setup_problem(num_timesteps, data_index=1):
     """Setup the Cahn-Hilliard problem: mesh, function spaces, and target data."""
     # Create mesh and function spaces
-    mesh = IntervalMesh(100, 1)
+    mesh = IntervalMesh(200, 2)
     V = FunctionSpace(mesh, "Lagrange", 1)
     W = V * V
     

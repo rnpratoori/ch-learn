@@ -8,19 +8,19 @@ rank = comm.rank
 
 # Model parameters
 lmbda = 5e-2
-chi = 2
-N1 = 3
-N2 = 3
+chi = 0.5
+N1 = 8
+N2 = 8
 M = 1
 
 # Simulation parameters
-dt = 2e-4
+dt = 8e-3
 T = dt*100
 N = T/dt
-outfile = VTKFile("ch_fh_6.pvd")
+outfile = VTKFile("ch_fh_13.pvd")
 
 # Create mesh
-mesh = IntervalMesh(100, 1)
+mesh = IntervalMesh(300, 3)
 
 # Define function space
 V = FunctionSpace(mesh, "Lagrange", 1)
