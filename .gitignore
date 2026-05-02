@@ -8,9 +8,14 @@ backup
 /wandb/
 *.pvd
 /reproduced_plots/
+/ch_fh*/
 
 # Checkpoints
 *.pth
+
+# Mesh
+*.geo
+*.msh
 
 # Generated plots and videos
 *.png
