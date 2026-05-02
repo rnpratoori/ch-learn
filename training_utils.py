@@ -54,7 +54,7 @@ def setup_device(args):
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
-    print(f"Using PyTorch device: {device}")
+    print(f"Using PyTorch device: {device}", flush=True)
     return device
 
 def setup_output_dir(args):
@@ -84,11 +84,11 @@ def initialize_training(args, model, device, output_dir):
     
     # Handle deprecated --no-scheduler flag
     if args.no_scheduler:
-        print("Warning: --no-scheduler is deprecated. Use --scheduler none instead.")
+        print("Warning: --no-scheduler is deprecated. Use --scheduler none instead.", flush=True)
         args.scheduler = 'none'
 
     if args.scheduler == 'cosine':
-        print(f"Using cosine annealing scheduler with {args.warmup_epochs} warm-up epochs.")
+        print(f"Using cosine annealing scheduler with {args.warmup_epochs} warm-up epochs.", flush=True)
         warmup_scheduler = optim.lr_scheduler.LambdaLR(
             optimizer,
             lr_lambda=lambda epoch: (epoch + 1) / args.warmup_epochs
@@ -104,18 +104,18 @@ def initialize_training(args, model, device, output_dir):
             milestones=[args.warmup_epochs]
         )
     elif args.scheduler == 'plateau':
-        print(f"Using ReduceLROnPlateau scheduler with patience {args.patience} and factor {args.factor}. Warmup handled in training loop.")
+        print(f"Using ReduceLROnPlateau scheduler with patience {args.patience} and factor {args.factor}. Warmup handled in training loop.", flush=True)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             factor=args.factor,
             patience=args.patience
         )
     elif args.scheduler == 'none':
-        print("Learning rate scheduler is disabled.")
+        print("Learning rate scheduler is disabled.", flush=True)
     else: # This else block will now be for 'plateau', which is removed.
         # This part should ideally not be reached if choices are restricted in argparse.
         # For safety, we can print a message.
-        print(f"Scheduler '{args.scheduler}' is not supported. Training without a scheduler.")
+        print(f"Scheduler '{args.scheduler}' is not supported. Training without a scheduler.", flush=True)
 
     # Load checkpoint if available
     start_epoch = 0
@@ -133,13 +133,13 @@ def initialize_training(args, model, device, output_dir):
     # Determine learning rate to use
     if resumed and args.resume_lr is not None:
         lr = args.resume_lr
-        print(f"Overriding learning rate to: {lr} (keeping optimizer momentum state)")
+        print(f"Overriding learning rate to: {lr} (keeping optimizer momentum state)", flush=True)
         for g in optimizer.param_groups:
             g['lr'] = lr
     else:
         lr = optimizer.param_groups[0]['lr']
         if resumed:
-            print(f"Resumed with learning rate: {lr}")
+            print(f"Resumed with learning rate: {lr}", flush=True)
     
     # Initialize wandb
     if not args.no_wandb:

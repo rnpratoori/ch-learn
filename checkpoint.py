@@ -22,9 +22,9 @@ def save_checkpoint(epoch, model, optimizer, scheduler, epoch_losses, epoch_numb
         artifact = wandb.Artifact(name="ch_learn_model", type="model")
         artifact.add_file(str(checkpoint_path))
         wandb.log_artifact(artifact)
-        print(f"Saved checkpoint artifact at epoch {epoch + 1}")
+        print(f"Saved checkpoint artifact at epoch {epoch + 1}", flush=True)
     else:
-        print(f"Saved checkpoint locally at epoch {epoch + 1}")
+        print(f"Saved checkpoint locally at epoch {epoch + 1}", flush=True)
 
 def load_checkpoint(model, optimizer, scheduler, device, output_dir, filename="ch_learn_model.pth"):
     """Load model, optimizer, and scheduler from checkpoint."""
@@ -33,11 +33,11 @@ def load_checkpoint(model, optimizer, scheduler, device, output_dir, filename="c
     if not checkpoint_path.exists():
         return 0, [], []
     
-    print(f"Loading checkpoint from {checkpoint_path}...")
+    print(f"Loading checkpoint from {checkpoint_path}...", flush=True)
     try:
         checkpoint = torch.load(checkpoint_path, map_location=device)
     except Exception as e:
-        print(f"Error loading checkpoint: {e}")
+        print(f"Error loading checkpoint: {e}", flush=True)
         return 0, [], []
     
     # Load model state
@@ -56,6 +56,6 @@ def load_checkpoint(model, optimizer, scheduler, device, output_dir, filename="c
     epoch_numbers = checkpoint.get('epoch_numbers', [])
     
     if epoch_losses:
-        print(f"Checkpoint loaded. Last completed epoch: {start_epoch-1}. Loss={epoch_losses[-1]:.6e}. Resuming at epoch {start_epoch}")
+        print(f"Checkpoint loaded. Last completed epoch: {start_epoch-1}. Loss={epoch_losses[-1]:.6e}. Resuming at epoch {start_epoch}", flush=True)
     
     return start_epoch, epoch_losses, epoch_numbers

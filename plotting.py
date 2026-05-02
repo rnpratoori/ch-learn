@@ -30,7 +30,7 @@ def plot_nn_output_vs_c(net, device, ylabel, title):
         )
         return fig
     except Exception as e:
-        print(f"Could not create nn output vs c plot: {e}")
+        print(f"Could not create nn output vs c plot: {e}", flush=True)
         return None
 
 
@@ -65,7 +65,7 @@ def plot_combined_final_timestep(preds_collection, epochs_collection, target_fin
             )
             return fig
         except Exception as e:
-            print(f"Could not create combined final-timestep plot: {e}")
+            print(f"Could not create combined final-timestep plot: {e}", flush=True)
             return None
     return None
 
@@ -97,4 +97,4 @@ def plot_loss_vs_epochs(epochs, losses, output_path, min_loss=None):
         fig.savefig(output_path)
         plt.close(fig)
     except Exception as e:
-        print(f"Could not create loss vs epochs plot: {e}")
+        print(f"Could not create loss vs epochs plot: {e}", flush=True)

@@ -63,7 +63,7 @@ outfile.write(project(c_, V, name="Volume Fraction"), time=t)
 
 while (t < T):
     if rank == 0:
-        print("Solving for t = ", t, "...")
+        print("Solving for t = ", t, "...", flush=True)
     solve(F == 0, u, solver_parameters={"ksp_type": "preonly", "pc_type": "lu", "convergence_criteria": "incremental", "pc_factor_mat_solver_type": "mumps"})
     u_.assign(u)
     t += dt

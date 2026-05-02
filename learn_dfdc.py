@@ -62,7 +62,7 @@ def setup_problem(data_dir):
     
     # Setup initial condition
     u_ic = Function(W, name="Initial_condition")
-    print("Setting initial condition from the first timestep of the target data.")
+    print("Setting initial condition from the first timestep of the target data.", flush=True)
     u_ic.sub(0).assign(c_target_list[0])
     u_ic.sub(1).assign(0.0)
     
@@ -204,7 +204,7 @@ def save_npz_data(output_dir, epoch, preds_collection, epochs_collection,
                   target_final_global, all_epochs_comparison_data, 
                   epoch_losses, epoch_numbers, model, device, use_wandb, all_nn_outputs):
     """Save post-processing data to .npz file."""
-    print(f"Saving .npz data at epoch {epoch}...")
+    print(f"Saving .npz data at epoch {epoch}...", flush=True)
     c_values_nn = np.linspace(0, 1, 200).reshape(-1, 1)
     c_tensor_nn = torch.from_numpy(c_values_nn).to(device)
     with torch.no_grad():
@@ -234,7 +234,7 @@ def main():
     
     # Override epochs if profiling
     if args.profile:
-        print("Profiling mode enabled: reducing epochs to 2")
+        print("Profiling mode enabled: reducing epochs to 2", flush=True)
         args.epochs = 2
     
     output_dir = setup_output_dir(args)
@@ -271,7 +271,7 @@ def main():
     # Aim for at least 20 saves, but save at least every 100 epochs.
     base_freq = max(1, num_epochs // 20)
     save_and_plot_freq = min(base_freq, 100)
-    print(f"Data and plots will be saved every {save_and_plot_freq} epochs.")
+    print(f"Data and plots will be saved every {save_and_plot_freq} epochs.", flush=True)
 
     plot_loss_freq = save_and_plot_freq
     npz_save_freq = save_and_plot_freq
@@ -290,7 +290,7 @@ def main():
     # Resume NPZ data if needed
     npz_path = output_dir / "post_processing_data.npz"
     if start_epoch > 0 and npz_path.exists():
-        print(f"Resuming from checkpoint, loading existing .npz data from {npz_path}")
+        print(f"Resuming from checkpoint, loading existing .npz data from {npz_path}", flush=True)
         with np.load(npz_path, allow_pickle=True) as data:
             preds_collection = list(data.get('preds_collection', []))
             epochs_collection = list(data.get('epochs_collection', []))
@@ -310,7 +310,7 @@ def main():
     else:
         warmup_scheduler = None
 
-    print(f"Starting training for {num_epochs} epochs...")
+    print(f"Starting training for {num_epochs} epochs...", flush=True)
     
     for epoch in range(start_epoch, num_epochs):
         loss_epoch, elapsed_time, u_curr, processed_comparison_data = train_epoch(
@@ -342,10 +342,10 @@ def main():
 
         if loss_epoch < min_loss:
             min_loss = loss_epoch
-            print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={loss_epoch:.6e}")
-            print(f"New minimum loss: {min_loss:.6e}")
+            print(f"Epoch {epoch+1}/{num_epochs} finished in {elapsed_time:.2f} s, J={loss_epoch:.6e}", flush=True)
+            print(f"New minimum loss: {min_loss:.6e}", flush=True)
             if scheduler is not None and current_lr != old_lr:
-                print(f"Learning rate updated to {current_lr:.6e}")
+                print(f"Learning rate updated to {current_lr:.6e}", flush=True)
         
         # Checkpointing
         if (epoch + 1) % checkpoint_freq == 0 or epoch == num_epochs - 1:
@@ -370,7 +370,7 @@ def main():
                           target_final_global, all_epochs_comparison_data,
                           epoch_losses, epoch_numbers, model, device, use_wandb, all_nn_outputs)
 
-    print("Training finished.")
+    print("Training finished.", flush=True)
     if use_wandb:
         wandb.finish()
 

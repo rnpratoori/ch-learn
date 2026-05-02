@@ -57,7 +57,7 @@ class CHSolver:
         problem = NonlinearVariationalProblem(F, self.u)
         self.solver = NonlinearVariationalSolver(problem, solver_parameters=solver_parameters)
         
-        print("CHSolver initialized - forms built once, solver ready for reuse")
+        print("CHSolver initialized - forms built once, solver ready for reuse", flush=True)
     
     def solve_step(self, u_old, dfdc_f, u_target):
         """
@@ -111,7 +111,7 @@ def solve_one_step(u_old, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda):
     return u
 
 def load_target_data(data_dir, V, comm=None, rank=None):
-    print("Loading target from PVD (pyvista)...")
+    print("Loading target from PVD (pyvista)...", flush=True)
     from scipy.spatial import KDTree
     from pathlib import Path
     
@@ -139,7 +139,7 @@ def load_target_data(data_dir, V, comm=None, rank=None):
     vtk_points = (vtk_points - vtk_points.min(axis=0)) / (vtk_points.max(axis=0) - vtk_points.min(axis=0))
     
     # Build KDTree for nearest neighbor search
-    print("Building KDTree for mesh mapping...")
+    print("Building KDTree for mesh mapping...", flush=True)
     tree = KDTree(vtk_points)
     
     # Get Firedrake DOF coordinates
@@ -147,10 +147,10 @@ def load_target_data(data_dir, V, comm=None, rank=None):
     fd_coords = V.mesh().coordinates.dat.data_ro
     
     # Find nearest VTK point for each Firedrake DOF
-    print("Mapping coordinates...")
+    print("Mapping coordinates...", flush=True)
     _, indices = tree.query(fd_coords)
 
-    print(f"Loading {len(files)} timesteps...")
+    print(f"Loading {len(files)} timesteps...", flush=True)
     for f_path in files:
         reader = pv.get_reader(str(f_path))
         data = reader.read()

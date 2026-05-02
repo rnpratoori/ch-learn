@@ -75,10 +75,10 @@ def create_animation_plot(c, true_y, all_pred_y, epochs, title, ylabel, output_p
         )
 
         pio.write_html(fig, output_path)
-        print(f"Saved animation to {output_path}")
+        print(f"Saved animation to {output_path}", flush=True)
 
     except Exception as e:
-        print(f"Could not create animation plot '{title}': {e}")
+        print(f"Could not create animation plot '{title}': {e}", flush=True)
 
 
 def generate_f_and_dfdc_animations(c_values, all_nn_outputs, N1, N2, chi, output_dir):
@@ -190,7 +190,7 @@ def plot_simulation_data_3d(all_epochs_data, output_path):
     Saves the plots as separate HTML files for each view.
     """
     if len(all_epochs_data) == 0:
-        print("No simulation data to write to Plotly file.")
+        print("No simulation data to write to Plotly file.", flush=True)
         return
 
     output_dir = output_path.parent
@@ -210,7 +210,7 @@ def plot_simulation_data_3d(all_epochs_data, output_path):
             # Determine dimensions from the first epoch
             first_epoch_data = all_epochs_data[0]['data']
             if not first_epoch_data:
-                print("Epoch data is empty, cannot determine dimensions.")
+                print("Epoch data is empty, cannot determine dimensions.", flush=True)
                 continue
 
             num_sim_timesteps = len(first_epoch_data)
@@ -283,10 +283,10 @@ def plot_simulation_data_3d(all_epochs_data, output_path):
 
             current_output_path = output_dir / config['filename']
             pio.write_html(fig, current_output_path)
-            print(f"Saved simulation data 3D plot to {current_output_path}")
+            print(f"Saved simulation data 3D plot to {current_output_path}", flush=True)
 
         except Exception as e:
-            print(f"Could not create simulation data 3D plot for {config['label']}: {e}")
+            print(f"Could not create simulation data 3D plot for {config['label']}: {e}", flush=True)
 
 
 def plot_multi_timestep_comparison_3d_from_data(epoch, comparison_data, output_path):
@@ -325,7 +325,7 @@ def plot_multi_timestep_comparison_3d_from_data(epoch, comparison_data, output_p
     plt.tight_layout()
     fig.savefig(output_path)
     plt.close(fig)
-    print(f"Saved 3D multi-timestep comparison plot to {output_path}")
+    print(f"Saved 3D multi-timestep comparison plot to {output_path}", flush=True)
 
 
 def plot_spacetime_error_3d(epoch, comparison_data, output_path):
@@ -363,9 +363,9 @@ def plot_spacetime_error_3d(epoch, comparison_data, output_path):
         plt.tight_layout()
         fig.savefig(output_path)
         plt.close(fig)
-        print(f"Saved 3D space-time error plot to {output_path}")
+        print(f"Saved 3D space-time error plot to {output_path}", flush=True)
     except Exception as e:
-        print(f"Could not create 3D space-time error plot: {e}")
+        print(f"Could not create 3D space-time error plot: {e}", flush=True)
 
 
 def reproduce_plots(npz_path):
@@ -374,7 +374,7 @@ def reproduce_plots(npz_path):
     """
     npz_path = Path(npz_path)
     if not npz_path.is_file():
-        print(f"Error: File not found at {npz_path}")
+        print(f"Error: File not found at {npz_path}", flush=True)
         return
 
     # Create output directory for plots, removing old plots
@@ -382,7 +382,7 @@ def reproduce_plots(npz_path):
     if plot_output_dir.exists():
         shutil.rmtree(plot_output_dir)
     plot_output_dir.mkdir()
-    print(f"Saving plots to {plot_output_dir}")
+    print(f"Saving plots to {plot_output_dir}", flush=True)
 
     data = np.load(npz_path, allow_pickle=True)
 
@@ -393,16 +393,16 @@ def reproduce_plots(npz_path):
         min_loss_idx = np.argmin(data['epoch_losses'])
         if 'epoch_numbers' in data:
             min_loss_epoch = data['epoch_numbers'][min_loss_idx]
-            print(f"\nMinimum loss of {data['epoch_losses'][min_loss_idx]} found at epoch {min_loss_epoch}.")
+            print(f"\nMinimum loss of {data['epoch_losses'][min_loss_idx]} found at epoch {min_loss_epoch}.", flush=True)
         else:
             # Fallback if epoch_numbers is not there for some reason
             min_loss_epoch = min_loss_idx + 1
-            print(f"\nMinimum loss of {data['epoch_losses'][min_loss_idx]} found at index {min_loss_idx} (epoch number may vary).")
+            print(f"\nMinimum loss of {data['epoch_losses'][min_loss_idx]} found at index {min_loss_idx} (epoch number may vary).", flush=True)
     else:
-        print("\nLoss data not found, cannot determine minimum loss epoch.")
+        print("\nLoss data not found, cannot determine minimum loss epoch.", flush=True)
 
     # --- 2. Write nn output vs c for all saved epochs to Plotly animation ---
-    print("\nGenerating nn output vs c animation for all saved epochs...")
+    print("\nGenerating nn output vs c animation for all saved epochs...", flush=True)
     if 'c_values_nn' in data and 'all_nn_outputs' in data:
         c_vals = data['c_values_nn']
         all_nn_outputs = data['all_nn_outputs']
@@ -414,7 +414,7 @@ def reproduce_plots(npz_path):
         generate_f_and_dfdc_animations(c_vals, all_nn_outputs, N1, N2, chi, plot_output_dir)
 
     elif 'c_values_nn' in data and 'nn_output_values' in data: # Backwards compatibility
-        print("Found old format 'nn_output_values'. Plotting for final model state only.")
+        print("Found old format 'nn_output_values'. Plotting for final model state only.", flush=True)
         c_vals = data['c_values_nn']
         # Create a structure that the new animation function can understand
         all_nn_outputs = [{'epoch': data['epochs_collection'][-1], 'output': data['nn_output_values']}]
@@ -426,15 +426,15 @@ def reproduce_plots(npz_path):
         generate_f_and_dfdc_animations(c_vals, all_nn_outputs, N1, N2, chi, plot_output_dir)
 
     else:
-        print("Skipping nn output animation: Data not found in .npz file.")
+        print("Skipping nn output animation: Data not found in .npz file.", flush=True)
 
     # --- 4. Write multi-timestep comparisons to Plotly 3D plot ---
-    print("\nGenerating multi-timestep comparison 3D plot...")
+    print("\nGenerating multi-timestep comparison 3D plot...", flush=True)
     if 'all_epochs_comparison_data' in data:
         all_epochs_data = data['all_epochs_comparison_data']
 
         if len(all_epochs_data) > 1000:
-            print(f"Found {len(all_epochs_data)} epochs, downsampling to 1000 for the plot.")
+            print(f"Found {len(all_epochs_data)} epochs, downsampling to 1000 for the plot.", flush=True)
             indices = np.linspace(0, len(all_epochs_data) - 1, 1000, dtype=int)
             all_epochs_data = [all_epochs_data[i] for i in indices]
 
