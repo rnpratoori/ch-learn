@@ -15,6 +15,8 @@ from checkpoint import load_checkpoint
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description='Cahn-Hilliard learning script.')
+    parser.add_argument('--data-dir', type=str, default='ch_fh', 
+                        help='Directory containing the target data files (.vtu or .vti)')
     parser.add_argument('--epochs', type=int, default=5000, 
                         help='Number of training epochs.')
     parser.add_argument('--learning-rate', type=float, default=1e-3, 

@@ -1,47 +1,41 @@
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
+from scipy.integrate import cumulative_trapezoid
 
 from pathlib import Path
 import argparse
 import shutil
 
 
-
-def plot_nn_output_animation(c_values, all_nn_outputs, ylabel, output_path):
+def create_animation_plot(c, true_y, all_pred_y, epochs, title, ylabel, output_path, is_error=False):
     """
-    Creates an animated Plotly plot of the neural network output vs. concentration for each epoch.
-    Saves the animation as an HTML file.
+    Helper function to create an animated Plotly plot (either Pred vs Target or Error).
     """
     try:
         fig = go.Figure()
 
-        # Calculate true df/dc
-        c = c_values.flatten()
-        # Add a small epsilon to avoid log(0)
-        epsilon = 1e-10
-        c_safe = np.clip(c, epsilon, 1 - epsilon)
-        true_dfdc = 1 - 2 * c_safe + (np.log(c_safe) - np.log(1 - c_safe)) / 5
-
-        # Add trace for true df/dc
-        fig.add_trace(
-            go.Scatter(
-                x=c,
-                y=true_dfdc,
-                name="True df/dc",
-                mode='lines',
-                line=dict(color='black', dash='dash')
-            )
-        )
-
-        # Add traces for each epoch
-        for nn_output_data in all_nn_outputs:
-            epoch = nn_output_data['epoch']
-            nn_output_values = nn_output_data['output']
+        offset = 0
+        if not is_error and true_y is not None:
+            # Add trace for true values
             fig.add_trace(
                 go.Scatter(
-                    x=c_values.flatten(),
-                    y=nn_output_values.flatten(),
+                    x=c,
+                    y=true_y,
+                    name="True",
+                    mode='lines',
+                    line=dict(color='black', dash='dash')
+                )
+            )
+            offset = 1
+
+        # Add traces for each epoch
+        for i, pred_y in enumerate(all_pred_y):
+            epoch = epochs[i]
+            fig.add_trace(
+                go.Scatter(
+                    x=c,
+                    y=pred_y,
                     name=f"Epoch {epoch}",
                     visible=False,
                     mode='lines'
@@ -49,21 +43,19 @@ def plot_nn_output_animation(c_values, all_nn_outputs, ylabel, output_path):
             )
 
         # Make the first trace visible
-        if len(fig.data) > 1:
-            fig.data[1].visible = True
+        if len(fig.data) > offset:
+            fig.data[offset].visible = True
 
         # Create and add slider
         steps = []
-        for i, nn_output_data in enumerate(all_nn_outputs):
-            epoch = nn_output_data['epoch']
-            # Set visibility for all traces
-            visibility = [True] + [False] * len(all_nn_outputs)
-            visibility[i+1] = True
+        for i, epoch in enumerate(epochs):
+            visibility = [True] * offset + [False] * len(all_pred_y)
+            visibility[offset + i] = True
             
             step = dict(
                 method="update",
                 args=[{"visible": visibility},
-                      {"title": f"Learned {ylabel} vs. Concentration (Epoch {epoch})"}],
+                      {"title": f"{title} (Epoch {epoch})"}],
                 label=str(epoch)
             )
             steps.append(step)
@@ -77,16 +69,89 @@ def plot_nn_output_animation(c_values, all_nn_outputs, ylabel, output_path):
 
         fig.update_layout(
             sliders=sliders,
-            title=f"Learned {ylabel} vs. Concentration (Epoch {all_nn_outputs[0]['epoch']})",
+            title=f"{title} (Epoch {epochs[0]})",
             xaxis_title="Concentration (c)",
             yaxis_title=ylabel,
         )
 
         pio.write_html(fig, output_path)
-        print(f"Saved nn output animation to {output_path}")
+        print(f"Saved animation to {output_path}")
 
     except Exception as e:
-        print(f"Could not create nn output animation: {e}")
+        print(f"Could not create animation plot '{title}': {e}")
+
+
+def generate_f_and_dfdc_animations(c_values, all_nn_outputs, N1, N2, chi, output_dir):
+    """
+    Generates 4 animations: f (pred vs target), f (error), dfdc (pred vs target), dfdc (error).
+    Calculates f from dfdc by integration and aligns the mean with true f.
+    """
+    c = c_values.flatten()
+    # Add a small epsilon to avoid log(0)
+    epsilon = 1e-10
+    c_safe = np.clip(c, epsilon, 1 - epsilon)
+    
+    # Calculate true f and true df/dc
+    true_f = (c_safe * np.log(c_safe) / N1 + 
+              (1 - c_safe) * np.log(1 - c_safe) / N2 + 
+              chi * c_safe * (1 - c_safe))
+    
+    true_dfdc = ((np.log(c_safe) + 1) / N1 - 
+                 (np.log(1 - c_safe) + 1) / N2 + 
+                 chi * (1 - 2 * c_safe))
+    
+    epochs = []
+    all_pred_dfdc = []
+    all_err_dfdc = []
+    all_pred_f = []
+    all_err_f = []
+    
+    mean_true_f = np.mean(true_f)
+    
+    for nn_output_data in all_nn_outputs:
+        epoch = nn_output_data['epoch']
+        epochs.append(epoch)
+        
+        pred_dfdc = nn_output_data['output'].flatten()
+        all_pred_dfdc.append(pred_dfdc)
+        all_err_dfdc.append(pred_dfdc - true_dfdc)
+        
+        # Calculate f by integration (numerical integration of df/dc)
+        # Using cumulative_trapezoid to get the antiderivative
+        pred_f_raw = cumulative_trapezoid(pred_dfdc, c, initial=0)
+        
+        # Shift predicted f so its mean matches the true f mean
+        pred_f = pred_f_raw - np.mean(pred_f_raw) + mean_true_f
+        all_pred_f.append(pred_f)
+        all_err_f.append(pred_f - true_f)
+    
+    # 1. f (Prediction & Target)
+    create_animation_plot(c, true_f, all_pred_f, epochs, 
+                          title="Learned f vs. Concentration", 
+                          ylabel="f", 
+                          output_path=output_dir / "f_pred_vs_target.html", 
+                          is_error=False)
+                          
+    # 2. f (Error)
+    create_animation_plot(c, None, all_err_f, epochs, 
+                          title="Error in f vs. Concentration", 
+                          ylabel="Error (Pred - True)", 
+                          output_path=output_dir / "f_error.html", 
+                          is_error=True)
+                          
+    # 3. df/dc (Prediction & Target)
+    create_animation_plot(c, true_dfdc, all_pred_dfdc, epochs, 
+                          title="Learned df/dc vs. Concentration", 
+                          ylabel="df/dc", 
+                          output_path=output_dir / "dfdc_pred_vs_target.html", 
+                          is_error=False)
+                          
+    # 4. df/dc (Error)
+    create_animation_plot(c, None, all_err_dfdc, epochs, 
+                          title="Error in df/dc vs. Concentration", 
+                          ylabel="Error (Pred - True)", 
+                          output_path=output_dir / "dfdc_error.html", 
+                          is_error=True)
 
 
 
@@ -338,22 +403,27 @@ def reproduce_plots(npz_path):
 
     # --- 2. Write nn output vs c for all saved epochs to Plotly animation ---
     print("\nGenerating nn output vs c animation for all saved epochs...")
-    if 'c_values_nn' in data and 'all_nn_outputs' in data and 'nn_output_label' in data:
-        ylabel = str(data['nn_output_label'])
+    if 'c_values_nn' in data and 'all_nn_outputs' in data:
         c_vals = data['c_values_nn']
         all_nn_outputs = data['all_nn_outputs']
-        output_path = plot_output_dir / "nn_output_vs_c.html"
         
-        plot_nn_output_animation(c_vals, all_nn_outputs, ylabel, output_path)
+        N1 = data.get('N1', 5.0)
+        N2 = data.get('N2', 5.0)
+        chi = data.get('chi', 1.0)
+        
+        generate_f_and_dfdc_animations(c_vals, all_nn_outputs, N1, N2, chi, plot_output_dir)
 
-    elif 'c_values_nn' in data and 'nn_output_values' in data and 'nn_output_label' in data: # Backwards compatibility
+    elif 'c_values_nn' in data and 'nn_output_values' in data: # Backwards compatibility
         print("Found old format 'nn_output_values'. Plotting for final model state only.")
-        ylabel = str(data['nn_output_label'])
         c_vals = data['c_values_nn']
         # Create a structure that the new animation function can understand
         all_nn_outputs = [{'epoch': data['epochs_collection'][-1], 'output': data['nn_output_values']}]
-        output_path = plot_output_dir / "nn_output_vs_c.html"
-        plot_nn_output_animation(c_vals, all_nn_outputs, ylabel, output_path)
+        
+        N1 = data.get('N1', 5.0)
+        N2 = data.get('N2', 5.0)
+        chi = data.get('chi', 1.0)
+        
+        generate_f_and_dfdc_animations(c_vals, all_nn_outputs, N1, N2, chi, plot_output_dir)
 
     else:
         print("Skipping nn output animation: Data not found in .npz file.")

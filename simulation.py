@@ -110,37 +110,58 @@ def solve_one_step(u_old, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda):
     })
     return u
 
-def load_target_data(num_timesteps, V, comm=None, rank=None):
+def load_target_data(data_dir, V, comm=None, rank=None):
     print("Loading target from PVD (pyvista)...")
     from scipy.spatial import KDTree
+    from pathlib import Path
     
     c_target_list = []
     
+    # Auto-detect files
+    vtu_files = sorted(Path(data_dir).glob('*.vtu'))
+    vti_files = sorted(Path(data_dir).glob('*.vti'))
+    files = vti_files if vti_files else vtu_files
+    
+    if not files:
+        raise ValueError(f"No .vtu or .vti files found in {data_dir}")
+
     # Read the first file to establish the coordinate mapping
     # We assume the mesh geometry is constant over time
-    reader = pv.get_reader("ch_fh/ch_fh_0.vtu")
+    reader = pv.get_reader(str(files[0]))
     mesh_data = reader.read()
+    
+    if "Volume Fraction" not in mesh_data.point_data and "Volume Fraction" in mesh_data.cell_data:
+        mesh_data = mesh_data.cell_data_to_point_data()
+        
     vtk_points = mesh_data.points
+    
+    # Normalize VTK points to [0, 1] to match Firedrake's UnitCubeMesh/UnitSquareMesh bounds
+    vtk_points = (vtk_points - vtk_points.min(axis=0)) / (vtk_points.max(axis=0) - vtk_points.min(axis=0))
     
     # Build KDTree for nearest neighbor search
     print("Building KDTree for mesh mapping...")
     tree = KDTree(vtk_points)
     
     # Get Firedrake DOF coordinates
-    # Note: tabulated coordinates match the .dat.data ordering
-    fd_coords = V.tabulate_dof_coordinates()
+    # Note: V.mesh().coordinates.dat.data_ro matches the .dat.data ordering for CG1
+    fd_coords = V.mesh().coordinates.dat.data_ro
     
     # Find nearest VTK point for each Firedrake DOF
     print("Mapping coordinates...")
     _, indices = tree.query(fd_coords)
 
-    print(f"Loading {num_timesteps} timesteps...")
-    for i in range(num_timesteps):
-        reader = pv.get_reader(f"ch_fh/ch_fh_{i}.vtu")
+    print(f"Loading {len(files)} timesteps...")
+    for f_path in files:
+        reader = pv.get_reader(str(f_path))
         data = reader.read()
+        
+        # Handle cell data conversion seamlessly
+        if "Volume Fraction" not in data.point_data and "Volume Fraction" in data.cell_data:
+            data = data.cell_data_to_point_data()
+            
         arr_global = data.point_data["Volume Fraction"].astype(np.float64)
 
-        f = Function(V, name=f"target_{i}")
+        f = Function(V, name=f"target_{len(c_target_list)}")
         
         # Assign data using the pre-computed mapping indices
         f.dat.data[:] = arr_global[indices]

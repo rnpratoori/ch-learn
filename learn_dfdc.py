@@ -33,16 +33,32 @@ torch.set_num_threads(1)
 torch.set_num_interop_threads(1)
 
 
-def setup_problem(num_timesteps):
+def setup_problem(data_dir):
     """Setup the Cahn-Hilliard problem: mesh, function spaces, and target data."""
-    # Create mesh and function spaces
-    mesh = UnitCubeMesh(100, 100, 100)
+    import pyvista as pv
+    from pathlib import Path
+    
+    vtu_files = sorted(Path(data_dir).glob('*.vtu'))
+    vti_files = sorted(Path(data_dir).glob('*.vti'))
+    first_file = vti_files[0] if vti_files else (vtu_files[0] if vtu_files else None)
+    
+    if first_file and first_file.suffix == '.vti':
+        data = pv.get_reader(str(first_file)).read()
+        nx, ny, nz = data.dimensions
+        if nz == 1:
+            mesh = UnitSquareMesh(nx - 1, ny - 1)
+        else:
+            mesh = UnitCubeMesh(nx - 1, ny - 1, nz - 1)
+    else:
+        # Fallback for VTU since structured dimensions aren't explicitly guaranteed
+        mesh = UnitCubeMesh(100, 100, 100)
+
     V = FunctionSpace(mesh, "Lagrange", 1)
     W = V * V
     
     # Load target data
     # Note: load_target_data might be slow; consider caching if often restarting
-    c_target_list, _, _ = load_target_data(num_timesteps, V, None, 0)
+    c_target_list, _, _ = load_target_data(data_dir, V, None, 0)
     
     # Setup initial condition
     u_ic = Function(W, name="Initial_condition")
@@ -226,13 +242,14 @@ def main():
     
     # Problem parameters
     dt = 1e-3
-    T = 1e-1
     M = 1.0
     lmbda = 5e-2
-    num_timesteps = int(T / dt)
     
     # Setup problem
-    V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list = setup_problem(num_timesteps)
+    V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list = setup_problem(args.data_dir)
+    
+    num_timesteps = len(c_target_list)
+    T = num_timesteps * dt
     
     # Initialize implementation
     # NOTE: ch_learn.py previously created ch_solver inside train(), moving it here and passing it down
