@@ -46,6 +46,23 @@ def parse_arguments():
                         help='Enable profiling mode (reduces epochs to 2).')
     parser.add_argument('--cpu', action='store_true',
                         help='Force usage of CPU for PyTorch even if CUDA is available.')
+    # Physics parameters
+    parser.add_argument('--chi', type=float, default=1.0,
+                        help='Flory-Huggins interaction parameter chi.')
+    parser.add_argument('--N1', type=float, default=5.0,
+                        help='Degree of polymerization N1.')
+    parser.add_argument('--N2', type=float, default=5.0,
+                        help='Degree of polymerization N2.')
+    # Simulation parameters
+    parser.add_argument('--dt', type=float, default=None,
+                        help='Time step size. If not provided, auto-estimated from MD metadata.')
+    parser.add_argument('--M', type=float, default=1.0,
+                        help='Mobility parameter.')
+    # Auto-estimation parameters
+    parser.add_argument('--zeta', type=float, default=1.0,
+                        help='Monomer friction coefficient for dt estimation (LJ units).')
+    parser.add_argument('--dump-interval', type=int, default=None,
+                        help='MD dump interval in timesteps (required for auto dt estimation).')
     return parser.parse_args()
 
 def setup_device(args):
@@ -62,6 +79,8 @@ def setup_output_dir(args):
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
+        # HPC launch scripts commonly pass OUTPUT_DIR through the environment;
+        # defaulting to "." keeps local one-off runs simple.
         output_dir = Path(os.getenv("OUTPUT_DIR", "."))
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
@@ -74,7 +93,8 @@ def initialize_training(args, model, device, output_dir):
     random.seed(args.seed)
     torch.set_default_dtype(torch.float64)
     
-    # Ensure model is on correct device and dtype
+    # Firedrake vectors are double precision, so train the torch model in
+    # float64 to avoid repeated dtype promotion when exchanging arrays.
     model = model.to(device)
     model.double()
     
@@ -130,7 +150,8 @@ def initialize_training(args, model, device, output_dir):
         if start_epoch > 0:
             resumed = True
 
-    # Determine learning rate to use
+    # Determine learning rate to use.  When resuming, keep Adam's accumulated
+    # state unless the user explicitly asks for a new step size.
     if resumed and args.resume_lr is not None:
         lr = args.resume_lr
         print(f"Overriding learning rate to: {lr} (keeping optimizer momentum state)", flush=True)
@@ -143,6 +164,8 @@ def initialize_training(args, model, device, output_dir):
     
     # Initialize wandb
     if not args.no_wandb:
+        # Keep the wandb config limited to run-defining choices so resumed jobs
+        # stay comparable even when output paths or transient machine state vary.
         config = {
             "learning_rate": lr,
             "epochs": args.epochs,

@@ -24,7 +24,8 @@ class CHSolver:
         self.M = M
         self.lmbda = lmbda
         
-        # Create functions once - these will be reused
+        # These Functions own the mutable state used by the solver.  Updating
+        # their data between steps is much cheaper than rebuilding UFL forms.
         self.u = Function(W, name="Solution")
         self.u_ = Function(W, name="Solution_Old")
         
@@ -36,11 +37,17 @@ class CHSolver:
         v = TestFunction(W)
         c_test, mu_test = split(v)
         
-        # Placeholder for dfdc - will be updated each timestep
+        # Placeholder for the learned constitutive relation.  The weak form
+        # keeps a symbolic reference to this Function, so assigning new values
+        # here changes the coefficient without invalidating the compiled form.
         V = W.sub(0)
         self.dfdc_f = Function(V, name="dfdc")
         
-        # Build form ONCE (not 1000 times per epoch!)
+        # Semi-implicit CH step:
+        #   c - c_old = (dt/2) M Laplacian(mu + mu_old)
+        #   mu = learned df/dc - lambda^2 Laplacian(c)
+        # The previous mu enters only through self.u_, while learned df/dc is
+        # injected through self.dfdc_f.
         F0 = (inner(c, c_test) - inner(c_, c_test)) * dx + \
              (dt/2) * M * dot(grad(mu + mu_), grad(c_test)) * dx
         F1 = inner(mu, mu_test) * dx - inner(self.dfdc_f, mu_test) * dx - \
@@ -71,7 +78,8 @@ class CHSolver:
         Returns:
             Updated solution (Function)
         """
-        # Update data in existing Functions (no form rebuilding!)
+        # Update coefficient data in existing Functions so the cached solver
+        # sees the new state and learned derivative for this timestep.
         self.u_.assign(u_old)
         self.dfdc_f.assign(dfdc_f)
         
@@ -117,7 +125,8 @@ def load_target_data(data_dir, V, comm=None, rank=None):
     
     c_target_list = []
     
-    # Auto-detect files
+    # Prefer VTI files when present because they preserve structured grid
+    # dimensions; otherwise fall back to VTU output from Firedrake/VTK.
     vtu_files = sorted(Path(data_dir).glob('*.vtu'))
     vti_files = sorted(Path(data_dir).glob('*.vti'))
     files = vti_files if vti_files else vtu_files
@@ -125,8 +134,8 @@ def load_target_data(data_dir, V, comm=None, rank=None):
     if not files:
         raise ValueError(f"No .vtu or .vti files found in {data_dir}")
 
-    # Read the first file to establish the coordinate mapping
-    # We assume the mesh geometry is constant over time
+    # Read the first file to establish the coordinate mapping.  The mapping is
+    # reused for every timestep, so this assumes all frames share one mesh.
     reader = pv.get_reader(str(files[0]))
     mesh_data = reader.read()
     
@@ -135,7 +144,9 @@ def load_target_data(data_dir, V, comm=None, rank=None):
         
     vtk_points = mesh_data.points
     
-    # Normalize VTK points to [0, 1] to match Firedrake's UnitCubeMesh/UnitSquareMesh bounds
+    # Normalize VTK points to [0, 1] to match Firedrake's unit-domain meshes.
+    # This lets MD outputs with physical box coordinates be compared against
+    # nondimensional CH coordinates.
     vtk_points = (vtk_points - vtk_points.min(axis=0)) / (vtk_points.max(axis=0) - vtk_points.min(axis=0))
     
     # Build KDTree for nearest neighbor search
@@ -146,7 +157,9 @@ def load_target_data(data_dir, V, comm=None, rank=None):
     # Note: V.mesh().coordinates.dat.data_ro matches the .dat.data ordering for CG1
     fd_coords = V.mesh().coordinates.dat.data_ro
     
-    # Find nearest VTK point for each Firedrake DOF
+    # Nearest-neighbor transfer is intentionally simple here: it preserves the
+    # observed values at grid/sample points and avoids introducing another
+    # interpolation operator into the training loop.
     print("Mapping coordinates...", flush=True)
     _, indices = tree.query(fd_coords)
 

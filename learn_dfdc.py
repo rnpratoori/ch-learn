@@ -42,6 +42,8 @@ def setup_problem(data_dir):
     vti_files = sorted(Path(data_dir).glob('*.vti'))
     first_file = vti_files[0] if vti_files else (vtu_files[0] if vtu_files else None)
     
+    # Structured VTI data carries grid dimensions directly.  VTU data can come
+    # from many mesh types, so the legacy 100^3 unit cube remains the fallback.
     if first_file and first_file.suffix == '.vti':
         data = pv.get_reader(str(first_file)).read()
         nx, ny, nz = data.dimensions
@@ -83,6 +85,9 @@ def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
     u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
     t_tensor = torch.tensor(target_np, device=device)
     
+    # The loss compares spectra instead of raw DOF-by-DOF values.  That makes
+    # the objective sensitive to phase-separated morphology over all modes,
+    # while PyTorch still gives the gradient with respect to the DOF vector.
     fft_u = torch.fft.fft(u_tensor)
     fft_t = torch.fft.fft(t_tensor)
     loss = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
@@ -96,7 +101,8 @@ def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
 def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list, 
                 V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb=True):
     """Execute one training epoch."""
-    # Clear previous tape
+    # Each epoch records a fresh Firedrake-adjoint tape.  Reusing an old tape
+    # would backpropagate through stale solves from previous parameter values.
     get_working_tape().clear_tape()
     
     epoch_t0 = time.perf_counter()
@@ -117,12 +123,15 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
     for i in range(num_timesteps):
         c_curr = u_curr.sub(0)
         
-        # Snapshot for backprop
+        # Store c before the CH solve.  Later, the model is re-evaluated at
+        # exactly these states so PyTorch can rebuild its own computation graph.
         c_snapshot = Function(V, name=f"c_snapshot_{i}")
         c_snapshot.assign(c_curr)
         c_inputs.append(c_snapshot)
         
-        # Neural network prediction
+        # During the Firedrake forward solve we only need numeric df/dc values.
+        # PyTorch graph construction is deferred until adjoint sensitivities
+        # are available, which keeps the forward pass lighter.
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
         with torch.no_grad():
             c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
@@ -146,7 +155,9 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
         # We calculate loss at every timestep? Original code did this.
         loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device)
         
-        # Inject gradient into Firedrake adjoint
+        # Inject d(loss)/d(c) from PyTorch as a Firedrake Function.  Assembling
+        # inner(g_i, c) creates a scalar functional whose derivative with
+        # respect to df/dc can be computed by Firedrake-adjoint.
         g_i = Function(V)
         g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
         
@@ -168,7 +179,9 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
     # --- PYTORCH BACKPROPAGATION ---
     optimizer.zero_grad()
     
-    # Accumulate gradients for PyTorch model
+    # Accumulate gradients for PyTorch model.  The adjoint derivative gives
+    # dJ/d(dfdc_i); multiplying it by the re-evaluated network output bridges
+    # Firedrake sensitivities back to torch parameters.
     total_scalar_for_backprop = torch.tensor(0.0, dtype=torch.float64, device=device)
     
     for i in range(num_timesteps):
@@ -241,15 +254,29 @@ def main():
     device = setup_device(args)
     
     # Problem parameters
-    dt = 1e-3
-    M = 1.0
+    M = args.M
     lmbda = 5e-2
+    
+    # Determine dt: use explicit value, auto-estimate, or fallback
+    if args.dt is not None:
+        dt = args.dt
+        print(f"Using user-provided dt = {dt}", flush=True)
+    elif args.dump_interval is not None:
+        from md_params import auto_estimate_dt
+        dt = auto_estimate_dt(args.data_dir, args.N1, args.N2, args.zeta, args.dump_interval)
+        if dt is None:
+            dt = 1e-3
+            print(f"Auto-estimation failed, falling back to dt = {dt}", flush=True)
+    else:
+        dt = 1e-3
+        print(f"No --dt or --dump-interval provided, using default dt = {dt}", flush=True)
     
     # Setup problem
     V, W, u_ic, u, c, mu, c_test, mu_test, c_target_list = setup_problem(args.data_dir)
     
     num_timesteps = len(c_target_list)
     T = num_timesteps * dt
+    print(f"Loaded {num_timesteps} frames. dt={dt:.6f}, T={T:.6f}", flush=True)
     
     # Initialize implementation
     # NOTE: ch_learn.py previously created ch_solver inside train(), moving it here and passing it down
@@ -287,7 +314,8 @@ def main():
     min_loss = float('inf')
     all_nn_outputs = []
     
-    # Resume NPZ data if needed
+    # Resume NPZ data if needed so post-processing curves remain continuous
+    # across restarted HPC jobs.
     npz_path = output_dir / "post_processing_data.npz"
     if start_epoch > 0 and npz_path.exists():
         print(f"Resuming from checkpoint, loading existing .npz data from {npz_path}", flush=True)
@@ -298,6 +326,8 @@ def main():
             all_epochs_comparison_data = list(data.get('all_epochs_comparison_data', []))
             all_nn_outputs = list(data.get('all_nn_outputs', []))
 
+    # ReduceLROnPlateau is stepped from the observed loss, so its warmup cannot
+    # live inside a SequentialLR the same way the cosine schedule does.
     if args.scheduler == 'plateau' and args.warmup_epochs > 0:
         warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,

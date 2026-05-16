@@ -15,6 +15,9 @@ def create_animation_plot(c, true_y, all_pred_y, epochs, title, ylabel, output_p
     try:
         fig = go.Figure()
 
+        # `offset` accounts for the optional always-visible target trace.
+        # Slider visibility lists must include it before the epoch-specific
+        # prediction traces.
         offset = 0
         if not is_error and true_y is not None:
             # Add trace for true values
@@ -116,8 +119,8 @@ def generate_f_and_dfdc_animations(c_values, all_nn_outputs, N1, N2, chi, output
         all_pred_dfdc.append(pred_dfdc)
         all_err_dfdc.append(pred_dfdc - true_dfdc)
         
-        # Calculate f by integration (numerical integration of df/dc)
-        # Using cumulative_trapezoid to get the antiderivative
+        # Calculate f by numerical integration of df/dc.  The integration
+        # constant is not identifiable from df/dc, so it is aligned below.
         pred_f_raw = cumulative_trapezoid(pred_dfdc, c, initial=0)
         
         # Shift predicted f so its mean matches the true f mean
@@ -377,7 +380,8 @@ def reproduce_plots(npz_path):
         print(f"Error: File not found at {npz_path}", flush=True)
         return
 
-    # Create output directory for plots, removing old plots
+    # Recreate the plot directory to avoid mixing fresh figures with outputs
+    # generated from an older NPZ schema or a different training run.
     plot_output_dir = npz_path.parent / "reproduced_plots"
     if plot_output_dir.exists():
         shutil.rmtree(plot_output_dir)
@@ -435,6 +439,8 @@ def reproduce_plots(npz_path):
 
         if len(all_epochs_data) > 1000:
             print(f"Found {len(all_epochs_data)} epochs, downsampling to 1000 for the plot.", flush=True)
+            # Plotly becomes unwieldy with thousands of surfaces; uniform
+            # downsampling keeps the beginning and end of training visible.
             indices = np.linspace(0, len(all_epochs_data) - 1, 1000, dtype=int)
             all_epochs_data = [all_epochs_data[i] for i in indices]
 

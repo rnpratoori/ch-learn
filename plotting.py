@@ -49,7 +49,9 @@ def plot_combined_final_timestep(preds_collection, epochs_collection, target_fin
             fig = go.Figure()
             x = np.arange(preds_collection[0].size)
             
-            # plot each collected prediction
+            # Use DOF index on the x-axis because predictions are stored after
+            # projection/transfer; physical coordinates are not saved in the
+            # compact NPZ artifact.
             for arr, ep in zip(preds_collection, epochs_collection):
                 fig.add_trace(go.Scatter(x=x, y=arr, mode='lines', name=f'Pred (ep {ep})', line=dict(width=1), opacity=0.9))
 
@@ -90,6 +92,8 @@ def plot_loss_vs_epochs(epochs, losses, output_path, min_loss=None):
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Loss")
         ax.set_title("Loss vs. Epochs")
+        # Loss values span several orders of magnitude during fitting, so a log
+        # scale preserves both early descent and late-epoch changes.
         ax.set_yscale('log')
         ax.legend()
         ax.grid(True)

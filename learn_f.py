@@ -103,7 +103,8 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
         c_snapshot.assign(c_curr)
         c_inputs.append(c_snapshot)
         
-        # Neural network prediction: predict f(c), then compute df/dc via autograd
+        # The solver needs df/dc, but this model learns f(c).  Autograd gives
+        # the derivative with respect to the concentration input at every DOF.
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
         c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device).requires_grad_(True)
         
@@ -129,7 +130,9 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
         # --- LOSS CALCULATION ---
         loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device)
         
-        # Inject gradient into Firedrake adjoint
+        # Inject d(loss)/d(c) from PyTorch as a Firedrake functional so
+        # Firedrake-adjoint can move the sensitivity backward through the CH
+        # timestep and onto each df/dc coefficient field.
         g_i = Function(V)
         g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
         
@@ -149,6 +152,9 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
     dJ_dcs = rf.derivative()
     
     # --- PYTORCH BACKPROPAGATION (with autograd for df/dc) ---
+    # The adjoint returns sensitivities with respect to df/dc.  Recomputing
+    # df/dc from f(c) keeps the graph connected to model weights, allowing
+    # second-order autograd terms from d(df/dc)/d(theta).
     optimizer.zero_grad()
     
     for i in range(num_timesteps):
@@ -243,7 +249,8 @@ def main():
     num_epochs = args.epochs
     checkpoint_freq = max(1, num_epochs // 20)
     
-    # Save and plot frequency logic
+    # Save and plot often enough to inspect training progress, but cap the
+    # cadence so long jobs do not spend excessive time writing artifacts.
     base_freq = max(1, num_epochs // 20)
     save_and_plot_freq = min(base_freq, 100)
     print(f"Data and plots will be saved every {save_and_plot_freq} epochs.", flush=True)
