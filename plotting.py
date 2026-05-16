@@ -75,7 +75,8 @@ def plot_combined_final_timestep(preds_collection, epochs_collection, target_fin
         try:
             x = np.arange(preds_collection[0].size)
             fig, ax = plt.subplots(figsize=(8,5))
-            # plot each collected prediction
+            # Use DOF index on the x-axis because the compact training artifact
+            # stores vectors without physical coordinate metadata.
             for arr, ep in zip(preds_collection, epochs_collection):
                 ax.plot(x, arr, label=f'Pred (ep {ep})', lw=1, alpha=0.9)
             # overlay ground truth (final time)
@@ -108,6 +109,8 @@ def plot_multi_timestep_comparison(epoch, comparison_data):
     colors = plt.cm.viridis(np.linspace(0, 1, num_plots))
 
     for i, (timestep, pred, target) in enumerate(comparison_data):
+        # Convert Firedrake Functions to read-only numpy views at the last
+        # possible moment so the plotting helper does not own solver state.
         pred_np = pred.dat.data_ro
         target_np = target.dat.data_ro
         x = np.arange(pred_np.size)

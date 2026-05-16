@@ -2,7 +2,9 @@ from firedrake import *
 from firedrake.petsc import PETSc
 import numpy as np
 
-# Model parameters
+# Model parameters for the Flory-Huggins free energy density
+#   f(c) = c log(c)/N1 + (1-c) log(1-c)/N2 + chi c(1-c)
+# and the Cahn-Hilliard interfacial penalty lambda^2 |grad c|^2 / 2.
 lmbda = 5e-2
 chi = 1
 N1 = 5
@@ -16,7 +18,9 @@ N = T/dt
 # Create mesh
 mesh = UnitIntervalMesh(100)
 
-# Define function space
+# Solve concentration c and chemical potential mu together in a mixed CG1
+# function space; this keeps the mass-balance and constitutive equations
+# coupled in one nonlinear solve.
 V = FunctionSpace(mesh, "Lagrange", 1)
 W = V*V
 
@@ -29,7 +33,8 @@ c_, mu_ = split(u_)
 v = TestFunction(W)
 c_test, mu_test = split(v)
 
-# Initial condition
+# Smooth deterministic perturbation around c=0.5.  It seeds phase separation
+# without relying on random data, making repeated runs easier to compare.
 rng = np.random.default_rng(11)
 num_dofs = u.sub(0).dat.data.shape[0]
 ic = np.zeros((num_dofs, 2))
@@ -41,7 +46,9 @@ u.assign(u_)
 
 timestep = 1e-6
 
-# Define residuals
+# Build the two residual blocks:
+# F0 is the time-discrete mass balance using midpoint mobility in mu.
+# F1 enforces mu = df/dc - lambda^2 Laplacian(c) in weak form.
 c = variable(c)
 f = c*ln(c)/N1 + (1-c)*ln(1-c)/N2 + chi*c*(1-c)
 dfdc = diff(f, c)

@@ -4,7 +4,8 @@ import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Define the target function
+# Define the analytic Flory-Huggins energy used as a lightweight surrogate
+# target for testing activation choices outside the expensive Firedrake loop.
 def target_function(c, chi=1, N1=5, N2=2):
     # Ensure c is within the valid range (0, 1) to avoid log(0)
     c = np.clip(c, 1e-6, 1 - 1e-6)
@@ -51,7 +52,9 @@ class FEDerivative_SiLU(nn.Module):
         )
     def forward(self, c): return self.mlp(c)
 
-# Training function
+# Training function shared by the activation comparison models.  It deliberately
+# uses plain MSE here because this file is a curve-fit smoke test, not the CH
+# adjoint objective.
 def train_network(model, data, targets, epochs=10000, lr=1e-3):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()

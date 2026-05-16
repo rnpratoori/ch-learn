@@ -28,6 +28,8 @@ config = {
 # PyTorch model
 # ----------------------
 class FEDerivative(nn.Module):
+    """Small MLP used as the learned constitutive relation df/dc(c)."""
+
     def __init__(self):
         super(FEDerivative, self).__init__()
         self.mlp = nn.Sequential(
@@ -114,7 +116,8 @@ get_working_tape().progress_bar = ProgressBar
 min_loss = float('inf')
 
 for epoch in range(start_epoch, num_epochs):
-    # clear previous tape
+    # Each epoch records a fresh Firedrake-adjoint tape.  Reusing an old tape
+    # would backpropagate through stale solves from previous parameter values.
     get_working_tape().clear_tape()
 
     epoch_t0 = time.perf_counter()
@@ -134,10 +137,14 @@ for epoch in range(start_epoch, num_epochs):
 
     for i in range(num_timesteps):
         c_curr = u_curr.sub(0)
+        # Store c before the CH solve.  Later the network is re-evaluated at
+        # exactly these states so PyTorch can rebuild its computation graph.
         c_snapshot = Function(V, name=f"c_snapshot_{i}")
         c_snapshot.assign(c_curr)
         c_inputs.append(c_snapshot)
 
+        # The Firedrake solve only needs numeric df/dc values.  Torch graph
+        # construction is deferred until adjoint sensitivities are available.
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
         with torch.no_grad():
             c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device)
@@ -159,6 +166,8 @@ for epoch in range(start_epoch, num_epochs):
         u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
         t_tensor = torch.tensor(target_np, device=device)
 
+        # Compare spectra instead of raw DOF values so the loss emphasizes
+        # morphology across all Fourier modes.
         fft_u = torch.fft.fft(u_tensor)
         fft_t = torch.fft.fft(t_tensor)
         loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
@@ -168,6 +177,8 @@ for epoch in range(start_epoch, num_epochs):
         (weight * loss_i).backward()
         grad_u_tensor = u_tensor.grad
 
+        # Inject d(loss)/d(c) from PyTorch as a Firedrake functional; the
+        # adjoint then propagates that sensitivity back to each df/dc field.
         g_i = Function(V)
         g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
 
@@ -191,6 +202,8 @@ for epoch in range(start_epoch, num_epochs):
     adjoint_grad_time = time.perf_counter() - adjoint_grad_start
 
     # --- PYTORCH BACKPROPAGATION ---
+    # dJ_dcs contains dJ/d(dfdc_i).  Multiplying it by the re-evaluated network
+    # output bridges Firedrake-adjoint sensitivities back to torch parameters.
     backprop_start = time.perf_counter()
     optimizer.zero_grad()
 

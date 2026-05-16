@@ -5,7 +5,8 @@ import wandb
 
 def save_checkpoint(epoch, model, optimizer, filename="ch_learn_model.pth"):
     """Saves the training state to a checkpoint file using wandb.Artifacts."""
-    # Save model locally first
+    # Save locally first, then upload the same file as a wandb Artifact.  The
+    # local copy keeps resume possible even if wandb is unavailable later.
     torch.save({
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -24,7 +25,8 @@ def load_checkpoint(model, optimizer, device, filename="ch_learn_model.pth"):
 
     if wandb.run:
         try:
-            # Download the latest model artifact
+            # Prefer the latest wandb artifact so runs resumed on another
+            # machine pick up the same weights and optimizer state.
             artifact = wandb.use_artifact('ch_learn_model:latest')
             artifact_path = artifact.download()
             checkpoint_path = os.path.join(artifact_path, filename)
@@ -37,7 +39,8 @@ def load_checkpoint(model, optimizer, device, filename="ch_learn_model.pth"):
         except Exception as e:
             print(f"Could not load wandb artifact: {e}. Starting training from scratch.")
     elif os.path.exists(filename):
-        # Fallback to local checkpoint if wandb not active or artifact not found
+        # Fallback to local checkpoint if wandb is inactive or the artifact
+        # download failed before this branch was reached.
         checkpoint = torch.load(filename, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

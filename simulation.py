@@ -5,10 +5,13 @@ from mpi4py import MPI
 
 def setup_firedrake():
     mesh = UnitIntervalMesh(100)
+    # The learning scripts work on a 1D mixed space here, with c and mu stored
+    # as the two components of the same Firedrake Function.
     V = FunctionSpace(mesh, "Lagrange", 1)
     W = V * V
 
-    # initial condition
+    # Deterministic oscillatory initial condition; using the DOF index keeps it
+    # aligned with the saved 1D target files from ch_fh.py.
     rng = np.random.default_rng(12)
     u_ic = Function(W, name="Initial_condition")
     num_dofs = u_ic.sub(0).dat.data.shape[0]
@@ -25,6 +28,9 @@ def solve_one_step(u_old, dfdc_f, u, c, mu, c_test, mu_test, dt, M, lmbda):
     c_ = u_.sub(0)
     mu_ = u_.sub(1)
 
+    # Semi-implicit CH step:
+    #   c - c_old = (dt/2) M Laplacian(mu + mu_old)
+    #   mu = learned df/dc - lambda^2 Laplacian(c)
     F0 = (inner(c, c_test) - inner(c_, c_test)) * dx + (dt/2) * M * dot(grad(mu + mu_), grad(c_test)) * dx
     F1 = inner(mu, mu_test) * dx - inner(dfdc_f, mu_test) * dx - lmbda**2 * dot(grad(c), grad(mu_test)) * dx
     F = F0 + F1
@@ -42,6 +48,8 @@ def load_target_data(num_timesteps, V, comm=None, rank=None):
     c_target_list = []
 
     for i in range(num_timesteps):
+        # The historical master branch reads its generated VTU sequence from a
+        # fixed path, assuming the Firedrake mesh and VTU point ordering match.
         reader = pv.get_reader(f"/home/rnp/firedrake/ch_learn/ch_fh/ch_fh_{i}.vtu")
         data = reader.read()
         arr_global = data.point_data["Volume Fraction"].astype(np.float64)

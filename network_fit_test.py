@@ -5,7 +5,8 @@ import matplotlib.pyplot as plt
 import os
 import csv
 
-# Define the target function
+# Define the analytic Flory-Huggins derivative used as a cheap curve-fit target
+# before placing the model inside the Firedrake-adjoint training loop.
 def target_function(c, chi=1.0, N1=5, N2=5):
     # Ensure c is within the valid range (0, 1) to avoid log(0)
     c = np.clip(c, 1e-8, 1 - 1e-8)
@@ -19,6 +20,8 @@ class FEDerivative(nn.Module):
     def __init__(self, layers, depth, activation_fn):
         super().__init__()
         
+        # Keep the first layer fixed at 50 features while varying the number of
+        # hidden blocks; this matches the architecture family logged below.
         module_list = [nn.Linear(1, 50), activation_fn()]
         for _ in range(layers - 1):
             module_list.extend([nn.Linear(50, 30), activation_fn()])
@@ -29,7 +32,8 @@ class FEDerivative(nn.Module):
     def forward(self, c):
         return self.mlp(c)
 
-# Training function
+# Training function for the standalone architecture sweep.  This script logs
+# final scalar losses to CSV rather than producing checkpointable training runs.
 def train_network(model, data, targets, epochs=10000, lr=1e-3):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()

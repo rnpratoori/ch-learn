@@ -30,6 +30,8 @@ checkpoint_filename = "ch_learn_energy_model.pth"
 # PyTorch model
 # ----------------------
 class FEnergy(nn.Module):
+    """Small MLP used to learn f(c); df/dc is recovered with torch autograd."""
+
     def __init__(self):
         super(FEnergy, self).__init__()
         self.mlp = nn.Sequential(
@@ -116,7 +118,8 @@ get_working_tape().progress_bar = ProgressBar
 min_loss = float('inf')
 
 for epoch in range(start_epoch, num_epochs):
-    # clear previous tape
+    # Each epoch records a fresh Firedrake-adjoint tape.  Reusing an old tape
+    # would backpropagate through stale solves from previous parameter values.
     get_working_tape().clear_tape()
 
     epoch_t0 = time.perf_counter()
@@ -136,6 +139,8 @@ for epoch in range(start_epoch, num_epochs):
 
     for i in range(num_timesteps):
         c_curr = u_curr.sub(0)
+        # Store c before the CH solve.  Later the model is re-evaluated at
+        # exactly these states so PyTorch can rebuild its computation graph.
         c_snapshot = Function(V, name=f"c_snapshot_{i}")
         c_snapshot.assign(c_curr)
         c_inputs.append(c_snapshot)
@@ -143,7 +148,8 @@ for epoch in range(start_epoch, num_epochs):
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
         c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device).requires_grad_(True)
         
-        # Predict f and compute df/dc using autograd
+        # Predict f and compute df/dc using autograd because the CH residual
+        # consumes the chemical potential derivative, not the energy itself.
         f_tensor = f_net(c_tensor)
         dfdc_tensor = torch.autograd.grad(f_tensor.sum(), c_tensor, create_graph=True)[0]
         
@@ -165,6 +171,8 @@ for epoch in range(start_epoch, num_epochs):
         u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
         t_tensor = torch.tensor(target_np, device=device)
 
+        # Compare spectra instead of raw DOF values so the loss emphasizes
+        # morphology across all Fourier modes.
         fft_u = torch.fft.fft(u_tensor)
         fft_t = torch.fft.fft(t_tensor)
         loss_i = 0.5 * torch.mean(torch.abs(fft_u - fft_t)**2)
@@ -174,6 +182,8 @@ for epoch in range(start_epoch, num_epochs):
         (weight * loss_i).backward()
         grad_u_tensor = u_tensor.grad
 
+        # Inject d(loss)/d(c) from PyTorch as a Firedrake functional; the
+        # adjoint then propagates that sensitivity back to each df/dc field.
         g_i = Function(V)
         g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
 
@@ -197,6 +207,9 @@ for epoch in range(start_epoch, num_epochs):
     adjoint_grad_time = time.perf_counter() - adjoint_grad_start
 
     # --- PYTORCH BACKPROPAGATION ---
+    # The adjoint returns sensitivities with respect to df/dc.  Recomputing
+    # df/dc from f(c) keeps the graph connected to model weights, including the
+    # second-order terms from d(df/dc)/d(theta).
     backprop_start = time.perf_counter()
     optimizer.zero_grad()
 
