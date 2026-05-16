@@ -76,6 +76,8 @@ def setup_output_dir(args):
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
+        # HPC launch scripts commonly pass OUTPUT_DIR through the environment;
+        # defaulting to "." keeps local one-off runs simple.
         output_dir = Path(os.getenv("OUTPUT_DIR", "."))
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
@@ -88,7 +90,8 @@ def initialize_training(args, model, device, output_dir, checkpoint_filename="ch
     random.seed(args.seed)
     torch.set_default_dtype(torch.float64)
     
-    # Ensure model is on correct device and dtype
+    # Firedrake vectors are double precision, so train the torch model in
+    # float64 to avoid repeated dtype promotion when exchanging arrays.
     model = model.to(device)
     model.double()
     
@@ -144,7 +147,8 @@ def initialize_training(args, model, device, output_dir, checkpoint_filename="ch
         if start_epoch > 0:
             resumed = True
 
-    # Determine learning rate to use
+    # Determine learning rate to use.  When resuming, keep Adam's accumulated
+    # state unless the user explicitly asks for a new step size.
     if resumed and args.resume_lr is not None:
         lr = args.resume_lr
         print(f"Overriding learning rate to: {lr} (keeping optimizer momentum state)")
@@ -157,6 +161,8 @@ def initialize_training(args, model, device, output_dir, checkpoint_filename="ch
     
     # Initialize wandb
     if not args.no_wandb:
+        # Keep the wandb config limited to run-defining choices so resumed jobs
+        # stay comparable even when output paths or transient machine state vary.
         config = {
             "learning_rate": lr,
             "epochs": args.epochs,

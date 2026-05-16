@@ -35,7 +35,8 @@ torch.set_num_interop_threads(1)
 
 def setup_problem(num_timesteps, data_index=1):
     """Setup the Cahn-Hilliard problem: mesh, function spaces, and target data."""
-    # Create mesh and function spaces
+    # Keep the learning mesh aligned with the generated ch_fh_<index> data:
+    # IntervalMesh(200, 2) gives 201 CG1 points on the same [0, 2] interval.
     mesh = IntervalMesh(200, 2)
     V = FunctionSpace(mesh, "Lagrange", 1)
     W = V * V
@@ -66,6 +67,8 @@ def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
     u_tensor = torch.tensor(u_curr_np, device=device, requires_grad=True)
     t_tensor = torch.tensor(target_np, device=device)
     
+    # MSE compares the concentration field directly at each DOF.  PyTorch still
+    # supplies d(loss)/d(c), which is injected into the Firedrake adjoint below.
     loss = 0.5 * torch.mean((u_tensor - t_tensor)**2)
     
     (weight * loss).backward()
@@ -77,7 +80,8 @@ def compute_loss_and_gradient(u_curr, target, device, weight=1.0):
 def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_list, 
                 V, W, dt, M, lmbda, num_timesteps, vtk_out, ch_solver, use_wandb=True):
     """Execute one training epoch."""
-    # Clear previous tape
+    # Each epoch records a fresh Firedrake-adjoint tape.  Reusing an old tape
+    # would backpropagate through stale solves from previous parameter values.
     get_working_tape().clear_tape()
     
     epoch_t0 = time.perf_counter()
@@ -96,12 +100,14 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
     for i in range(num_timesteps):
         c_curr = u_curr.sub(0)
         
-        # Snapshot for backprop
+        # Store c before the CH solve.  Later, the model is re-evaluated at
+        # exactly these states so PyTorch can rebuild its own computation graph.
         c_snapshot = Function(V, name=f"c_snapshot_{i}")
         c_snapshot.assign(c_curr)
         c_inputs.append(c_snapshot)
         
-        # Neural network prediction: predict f(c), then compute df/dc via autograd
+        # The solver needs df/dc, but this model learns f(c).  Autograd gives
+        # the derivative with respect to the concentration input at every DOF.
         c_vec = c_curr.dat.data_ro.copy().astype(np.float64)
         c_tensor = torch.from_numpy(c_vec.reshape(-1, 1)).to(device).requires_grad_(True)
         
@@ -127,7 +133,9 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
         # --- LOSS CALCULATION ---
         loss_val, grad_u_tensor = compute_loss_and_gradient(u_curr, c_target_list[i], device)
         
-        # Inject gradient into Firedrake adjoint
+        # Inject d(loss)/d(c) from PyTorch as a Firedrake functional so
+        # Firedrake-adjoint can move the sensitivity backward through the CH
+        # timestep and onto each df/dc coefficient field.
         g_i = Function(V)
         g_i.dat.data[:] = grad_u_tensor.cpu().numpy()
         
@@ -147,6 +155,9 @@ def train_epoch(epoch, num_epochs, model, optimizer, device, u_ic, u, c_target_l
     dJ_dcs = rf.derivative()
     
     # --- PYTORCH BACKPROPAGATION (with autograd for df/dc) ---
+    # The adjoint returns sensitivities with respect to df/dc.  Recomputing
+    # df/dc from f(c) keeps the graph connected to model weights, including the
+    # second-order terms from d(df/dc)/d(theta).
     optimizer.zero_grad()
     
     for i in range(num_timesteps):
@@ -187,7 +198,8 @@ def save_npz_data(output_dir, epoch, preds_collection, epochs_collection,
     with torch.no_grad():
         nn_output_values = model(c_tensor_nn).cpu().numpy()
 
-    # Append current nn_output to the collection
+    # Append the current learned curve so reproduced plots can animate training
+    # history without loading every checkpoint.
     all_nn_outputs.append({'epoch': epoch, 'output': nn_output_values})
     
     npz_path = output_dir / "post_processing_energy.npz"
@@ -250,7 +262,8 @@ def main():
     num_epochs = args.epochs
     checkpoint_freq = max(1, num_epochs // 20)
     
-    # Save and plot frequency logic
+    # Save and plot often enough to inspect training progress, but cap the
+    # cadence so long jobs do not spend excessive time writing artifacts.
     base_freq = max(1, num_epochs // 20)
     save_and_plot_freq = min(base_freq, 100)
     print(f"Data and plots will be saved every {save_and_plot_freq} epochs.")
@@ -269,7 +282,8 @@ def main():
     min_loss = float('inf')
     all_nn_outputs = []
     
-    # Resume NPZ data if needed
+    # Resume NPZ data if needed so post-processing curves remain continuous
+    # across restarted HPC jobs.
     npz_path = output_dir / "post_processing_energy.npz"
     if start_epoch > 0 and npz_path.exists():
         print(f"Resuming from checkpoint, loading existing .npz data from {npz_path}")
@@ -280,6 +294,8 @@ def main():
             all_epochs_comparison_data = list(data.get('all_epochs_comparison_data', []))
             all_nn_outputs = list(data.get('all_nn_outputs', []))
 
+    # ReduceLROnPlateau is stepped from the observed loss, so its warmup cannot
+    # live inside a SequentialLR the same way the cosine schedule does.
     if args.scheduler == 'plateau' and args.warmup_epochs > 0:
         warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,

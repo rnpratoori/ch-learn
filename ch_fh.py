@@ -2,11 +2,14 @@ from firedrake import *
 
 import numpy as np
 
-# Add MPI communicator
+# Firedrake runs this script under MPI even for single-process jobs.  Keep
+# the rank handy so progress messages are emitted once while VTK output stays
+# on Firedrake's parallel-aware writer.
 comm = COMM_WORLD
 rank = comm.rank
 
-# Model parameters
+# Model parameters for the Flory-Huggins free energy density and CH interface
+# penalty on this 1D reference simulation.
 lmbda = 5e-2
 chi = 1
 N1 = 5
@@ -20,7 +23,8 @@ N = T/dt
 # Create mesh
 mesh = IntervalMesh(200, 2)
 
-# Define function space
+# Use a mixed CG1 space so concentration c and chemical potential mu are solved
+# together as one nonlinear system.
 V = FunctionSpace(mesh, "Lagrange", 1)
 W = V*V
 
@@ -33,7 +37,8 @@ c_, mu_ = split(u_)
 v = TestFunction(W)
 c_test, mu_test = split(v)
 
-# Initial condition
+# Smooth deterministic perturbation around c=0.5.  The DOF-indexed sine mode
+# matches the historical generated datasets in this branch.
 rng = np.random.default_rng(11)
 num_dofs = u.sub(0).dat.data.shape[0]
 ic = np.zeros((num_dofs, 2))
@@ -43,7 +48,9 @@ u_.sub(0).dat.data[:] = ic[:, 0]  # First component
 u_.sub(1).dat.data[:] = ic[:, 1]  # Second component
 u.assign(u_)
 
-# Define residuals
+# Build the two residual blocks:
+# F0 is the time-discrete mass balance using midpoint mobility in mu.
+# F1 enforces mu = df/dc - lambda^2 Laplacian(c) in weak form.
 c = variable(c)
 f = c*ln(c)/N1 + (1-c)*ln(1-c)/N2 + chi*c*(1-c)
 dfdc = diff(f, c)
