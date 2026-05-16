@@ -16,25 +16,29 @@ def plot_nn_output_animation(c_values, all_nn_outputs, ylabel, output_path, chi=
     try:
         fig = go.Figure()
 
-        # Calculate true df/dc
+        # Calculate the analytic reference curve from the physics metadata saved
+        # in the NPZ file, falling back to the historical defaults if needed.
         c = c_values.flatten()
         # Add a small epsilon to avoid log(0)
         epsilon = 1e-10
         c_safe = np.clip(c, epsilon, 1 - epsilon)
         if chi is not None and N1 is not None and N2 is not None:
-             # Use dynamic physics parameters
-             if "Energy" in str(ylabel):
-                 # Formula for f: c*Log[c]/N1+(1-c)*Log[1-c]/N2+chi*c*(1-c)
-                 true_values = (c_safe * np.log(c_safe))/N1 + ((1 - c_safe) * np.log(1 - c_safe))/N2 + chi * c_safe * (1 - c_safe)
-                 label_name = "True f(c)"
-                 # Align theoretical minimum with learned minimum for better visual comparison (optional, but helpful as f is defined up to constant)
-                 # Here we just plot the theoretical absolute value.
-             else:
-                 # Formula for df/dc: chi - 2* c *chi + 1/N1 - 1/N2 - Log[1 - c]/N2 + Log[c]/N1
-                 true_values = chi - 2 * chi * c_safe + 1/N1 - 1/N2 - (np.log(1 - c_safe))/N2 + (np.log(c_safe))/N1
-                 label_name = "True df/dc"
-                 print("Using true df/dc formula")
-             print(f"Using dynamic {label_name} with chi={chi}, N1={N1}, N2={N2}")
+            # Use dynamic physics parameters.
+            if "Energy" in str(ylabel):
+                # Formula for f: c*Log[c]/N1+(1-c)*Log[1-c]/N2+chi*c*(1-c).
+                # f is identifiable only up to an additive constant in some
+                # learning paths, but this plot shows the absolute analytic
+                # reference for orientation.
+                true_values = (c_safe * np.log(c_safe))/N1 + ((1 - c_safe) * np.log(1 - c_safe))/N2 + chi * c_safe * (1 - c_safe)
+                label_name = "True f(c)"
+                # Align theoretical minimum with learned minimum for better visual comparison (optional, but helpful as f is defined up to constant)
+                # Here we just plot the theoretical absolute value.
+            else:
+                # Formula for df/dc: chi - 2* c *chi + 1/N1 - 1/N2 - Log[1 - c]/N2 + Log[c]/N1
+                true_values = chi - 2 * chi * c_safe + 1/N1 - 1/N2 - (np.log(1 - c_safe))/N2 + (np.log(c_safe))/N1
+                label_name = "True df/dc"
+                print("Using true df/dc formula")
+            print(f"Using dynamic {label_name} with chi={chi}, N1={N1}, N2={N2}")
         else:
              # Fallback to old hardcoded formula
              true_values = 1 - 2 * c_safe + (np.log(c_safe) - np.log(1 - c_safe)) / 5
@@ -335,7 +339,8 @@ def reproduce_plots(npz_path):
         print(f"Error: File not found at {npz_path}")
         return
 
-    # Create output directory for plots, removing old plots
+    # Recreate the plot directory to avoid mixing fresh figures with outputs
+    # generated from an older NPZ schema or a different training run.
     plot_output_dir = npz_path.parent / "reproduced_plots"
     if plot_output_dir.exists():
         shutil.rmtree(plot_output_dir)
@@ -394,6 +399,8 @@ def reproduce_plots(npz_path):
 
         if len(all_epochs_data) > 1000:
             print(f"Found {len(all_epochs_data)} epochs, downsampling to 1000 for the plot.")
+            # Plotly becomes unwieldy with thousands of surfaces; uniform
+            # downsampling keeps the beginning and end of training visible.
             indices = np.linspace(0, len(all_epochs_data) - 1, 1000, dtype=int)
             all_epochs_data = [all_epochs_data[i] for i in indices]
 

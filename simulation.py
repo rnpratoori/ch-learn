@@ -24,7 +24,8 @@ class CHSolver:
         self.M = M
         self.lmbda = lmbda
         
-        # Create functions once - these will be reused
+        # These Functions own the mutable state used by the solver.  Updating
+        # their data between steps is much cheaper than rebuilding UFL forms.
         self.u = Function(W, name="Solution")
         self.u_ = Function(W, name="Solution_Old")
         
@@ -36,11 +37,17 @@ class CHSolver:
         v = TestFunction(W)
         c_test, mu_test = split(v)
         
-        # Placeholder for dfdc - will be updated each timestep
+        # Placeholder for the learned constitutive relation.  The weak form
+        # keeps a symbolic reference to this Function, so assigning new values
+        # here changes the coefficient without invalidating the compiled form.
         V = W.sub(0)
         self.dfdc_f = Function(V, name="dfdc")
         
-        # Build form ONCE (not 1000 times per epoch!)
+        # Semi-implicit CH step:
+        #   c - c_old = (dt/2) M Laplacian(mu + mu_old)
+        #   mu = learned df/dc - lambda^2 Laplacian(c)
+        # The previous mu enters through self.u_, while learned df/dc is
+        # injected through self.dfdc_f.
         F0 = (inner(c, c_test) - inner(c_, c_test)) * dx + \
              (dt/2) * M * dot(grad(mu + mu_), grad(c_test)) * dx
         F1 = inner(mu, mu_test) * dx - inner(self.dfdc_f, mu_test) * dx - \
@@ -71,7 +78,8 @@ class CHSolver:
         Returns:
             Updated solution (Function)
         """
-        # Update data in existing Functions (no form rebuilding!)
+        # Update coefficient data in existing Functions so the cached solver
+        # sees the new state and learned derivative for this timestep.
         self.u_.assign(u_old)
         self.dfdc_f.assign(dfdc_f)
         
@@ -114,8 +122,9 @@ def load_target_data(num_timesteps, V, comm=None, rank=None, data_index=1):
     print(f"Loading target from PVD (pyvista) using index {data_index}...")
     c_target_list = []
     
-    # Pre-compute local-to-global index mapping based on coordinates
-    # This is necessary for parallel execution where each rank only owns a part of the mesh
+    # Pre-compute a local-to-global index mapping based on coordinates.  In
+    # parallel runs each rank owns only a slice of the mesh, but the VTU reader
+    # returns the full serial point array.
     x = SpatialCoordinate(V.mesh())
     # Interpolate x coordinate onto V
     x_fn = Function(V).interpolate(x[0])
@@ -126,8 +135,8 @@ def load_target_data(num_timesteps, V, comm=None, rank=None, data_index=1):
     N = 200
     dx = L / N
     
-    # Map coordinates to indices: index = round(x / dx)
-    # We use rint to round to nearest integer
+    # Map coordinates to nearest saved point index.  This assumes the training
+    # mesh and generated VTU data share a uniform 1D grid on [0, 2].
     indices = np.rint(x_local / dx).astype(int)
     
     # Clip indices to ensure they are within bounds (0 to 200 inclusive -> 201 points)

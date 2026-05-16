@@ -2,11 +2,15 @@ from firedrake import *
 
 import numpy as np
 
-# Add MPI communicator
+# Firedrake runs this script under MPI even for single-process jobs.  Keep the
+# rank handy so progress messages are emitted once while VTK output remains
+# handled by Firedrake's parallel-aware writer.
 comm = COMM_WORLD
 rank = comm.rank
 
-# Model parameters
+# Coupled Cahn-Hilliard / Allen-Cahn parameters.  c evolves conservatively
+# through chemical potential mu, while eta is a nonconserved crystallinity/order
+# parameter driven by its own double-well-like free-energy contribution.
 lmbda = 5e-2
 chi_aa = 1.0
 chi_ac = 1.0
@@ -29,7 +33,8 @@ outfile = VTKFile("ch_ac_1.pvd")
 # Create mesh
 mesh = IntervalMesh(100, 1)
 
-# Define function space
+# Use a three-component mixed space so c, mu, and eta are solved as one coupled
+# nonlinear system.
 V = FunctionSpace(mesh, "Lagrange", 1)
 W = V*V*V
 
@@ -49,8 +54,9 @@ ic = np.zeros((num_dofs, 3))
 ic[:, 0] = [0.5 + 0.2 * sin(pi*i/4) for i in range(num_dofs)]
 ic[:, 1] = 0  # Initial condition for mu
 
-# Initial condition for eta (crystallinity) - Step function nucleus
-# Get x-coordinates of the DOFs for the V space
+# Initial condition for eta (crystallinity): a compact nucleus centered in the
+# domain.  The width is tied to the eta interface length so the initial seed is
+# resolved by the mesh.
 mesh_coords = mesh.coordinates.dat.data_ro
 if mesh_coords.ndim == 1:
     x_coords = mesh_coords
@@ -75,7 +81,9 @@ u_.sub(1).dat.data[:] = ic[:, 1]  # Second component (mu)
 u_.sub(2).dat.data[:] = ic[:, 2]  # Third component (eta)
 u.assign(u_)
 
-# Define residuals
+# Build the three residual blocks:
+# F0 is CH mass balance for c, F1 defines the chemical potential mu, and F2 is
+# the Allen-Cahn update for eta using the derivative of the coupled free energy.
 c = variable(c)
 eta = variable(eta)
 f_mix = c*ln(c)/N1 + (1-c)*ln(1-c)/N2 + chi_aa*c*(1-c)

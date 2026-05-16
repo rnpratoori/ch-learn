@@ -17,5 +17,7 @@ class FEDerivative(nn.Module):
 
     def forward(self, c):
         output = self.mlp(c)
-        # Enforce zero mean on the output
+        # The CH equation only uses gradients of chemical potential, so adding
+        # a constant to df/dc is unobservable.  Removing the batch mean fixes
+        # that gauge freedom and stabilizes training.
         return output - torch.mean(output, dim=0, keepdim=True)

@@ -5,6 +5,9 @@ import wandb
 def save_checkpoint(epoch, model, optimizer, scheduler, epoch_losses, epoch_numbers, output_dir, filename="ch_learn_model.pth"):
     """Saves the training state to a checkpoint file."""
     checkpoint_path = output_dir / filename
+    # Store enough state to resume optimization, not just inference.  The loss
+    # history is included because plotting and NPZ post-processing append to it
+    # after restarts.
     state = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -43,7 +46,8 @@ def load_checkpoint(model, optimizer, scheduler, device, output_dir, filename="c
     # Load model state
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    # Load optimizer state
+    # Load optimizer state so Adam moments and scheduler progress continue
+    # smoothly after an HPC preemption or manual restart.
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     

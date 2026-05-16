@@ -38,6 +38,8 @@ def plot_combined_final_timestep(preds_collection, epochs_collection, target_fin
             fig = go.Figure()
             x = np.arange(preds_collection[0].size)
             
+            # Use DOF index on the x-axis because predictions are stored after
+            # projection/transfer without physical coordinate metadata.
             for arr, ep in zip(preds_collection, epochs_collection):
                 fig.add_trace(go.Scatter(x=x, y=arr, mode='lines', name=f'Pred (ep {ep})', line=dict(width=1), opacity=0.9))
 
@@ -70,6 +72,8 @@ def plot_loss_vs_epochs(epochs, losses, output_path, min_loss=None):
             ax.axhline(y=min_loss, color='r', linestyle='--', label=f"Min Loss: {min_loss:.6e}")
             
         ax.set(xlabel="Epoch", ylabel="Loss (log scale)", title="Loss vs. Epochs")
+        # Loss values span several orders of magnitude during fitting, so a log
+        # scale preserves both early descent and late-epoch changes.
         ax.set_yscale('log')
         ax.grid(True)
         ax.legend()
@@ -98,6 +102,8 @@ def plot_multi_timestep_comparison_2d(epoch, comparison_data, title=None):
     colors = px.colors.qualitative.Plotly
     
     for i, (timestep, pred_np, target_np) in enumerate(comparison_data):
+        # Curves are indexed by DOF because saved comparison snapshots contain
+        # compact arrays rather than mesh coordinates.
         x = np.arange(pred_np.size)
         color = colors[i % len(colors)]
         
@@ -133,7 +139,8 @@ def plot_multi_timestep_comparison_3d(epoch, comparison_data, title=None):
 
     fig = go.Figure()
 
-    # Prediction surface
+    # Prediction and target are plotted over DOF index and saved timestep,
+    # giving a quick space-time view without reopening Firedrake data files.
     fig.add_trace(go.Surface(x=x_coords, y=t_coords, z=C_pred, 
                              name='Prediction', colorscale='Viridis', showscale=False, opacity=0.8))
     
